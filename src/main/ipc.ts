@@ -44,7 +44,7 @@ import type { Namespace } from '../shared/types';
 import { meetilyReader } from './services/stt/meetily';
 import { stopLocalTranscription } from './services/stt/whisperlivekit';
 import { withOverlayReplay } from './services/overlay-replay';
-import { detectQuestions } from './services/question-detection';
+import { detectQuestions, QUESTION_PROMPT_VERSION } from './services/question-detection';
 import { getSecret } from './services/secrets';
 
 const detections = new Set<AbortController>();
@@ -123,7 +123,20 @@ export function registerIpc(): void {
     const key = getSecret('typesafe');
     if (!key) throw new Error('Add your TypeSafe key in Settings → Providers.');
     const controller = new AbortController(); detections.add(controller);
-    try { return await detectQuestions(batch, key, controller.signal); }
+    const began = Date.now();
+    const threshold = settings().get().questionDetection.threshold;
+    try {
+      const results = await detectQuestions(batch, key, controller.signal);
+      if (controller.signal.aborted || batch.profileId !== settings().get().activeProfile) throw new Error('Question check cancelled');
+      // Only real class sessions are archived; ad-hoc diagnostic IPC calls are not.
+      if (batch.sessionId) for (const result of results) recordEvent({
+        t: Date.now(), type: 'question-check', questionId: result.id, profileId: batch.profileId,
+        text: batch.candidates.find(c => c.id === result.id)!.text, probability: result.probability,
+        threshold, passed: result.probability >= threshold, elapsedMs: Date.now() - began,
+        promptVersion: QUESTION_PROMPT_VERSION,
+      }, batch.sessionId);
+      return results;
+    }
     finally { detections.delete(controller); }
   });
   ipcMain.handle(IPC.questionsCancel, () => { for (const c of detections) c.abort(); detections.clear(); });

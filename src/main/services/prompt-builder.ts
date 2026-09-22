@@ -19,6 +19,7 @@ export interface BuildAnswerOpts {
   newSegment: string;
   userSpeaker: number;
   forced: boolean;
+  detected?: boolean;
   codeMode: boolean;
 }
 
@@ -71,6 +72,8 @@ export function buildAnswerRequest(opts: BuildAnswerOpts): LlmRequest {
 
   const directive = opts.forced
     ? 'The user explicitly requested help RIGHT NOW. Respond to the very LAST thing said in the conversation. Do NOT skip. Do NOT re-answer old questions.'
+    : opts.detected
+      ? 'ANSWER THE SELECTED PARTICIPATION OPPORTUNITY in NEW SEGMENT, using nearby conversation to complete fragments and resolve references. It has already passed the discussion detector; prefer a useful short answer over SKIP. An invitation to comment, disagree, demonstrate the reading, or add a question calls for one relevant contribution, not a yes/no about volunteering. Earlier explanation or a partial answer in the transcript is not a reason to skip. Do not switch to a different later question. Give the requested example, name, distinction, or explanation first, not a generic related theory. Readings are optional support, not a requirement for answering: ordinary reasoning, classroom examples, and general knowledge can stand without a citation. Never invent source support. Use SKIP only for clearly non-content chatter or when no intended topic can reasonably be recovered. Do not infer speaker identities.'
     : 'Use the NEW SEGMENT together with preceding context to identify the latest completed substantive question or discussion invitation. Reply SKIP for incomplete prompts, logistics, rhetorical questions already answered, or repeats. Do not infer speaker identities.';
 
   const referenceData = JSON.stringify({

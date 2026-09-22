@@ -6,6 +6,7 @@ export function buildExpansionRequest(original: LlmRequest, answer: string, prof
     'Stay with the original question and its supplied course evidence, not a newer topic. Treat the previous answer as an unverified draft; correct it if needed.',
     'Write 100–180 words in very simple, natural spoken English. Give a little more explanation, one concrete example when useful, and an important qualification. Define any necessary jargon. No setup commentary.',
     'Do not invent readings, quotations, facts, or citations. Distinguish what the supplied readings support from your own inference. Do not search or use tools.',
+    'The original conversation determines the topic. Readings are optional support: use ordinary reasoning and clearly illustrative examples when appropriate, without forcing a citation or claiming the reading establishes them.',
   ];
   if (profileId === 'political-identities') guidance.push(
     'POLISCI 3304F discussion preference: when the discussion is one-sided and a credible contrasting perspective adds substance, include a brief, clearly signposted devil’s-advocate contribution, such as “To play devil’s advocate…” or “Someone on the other side might argue…”.',

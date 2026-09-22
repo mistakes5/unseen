@@ -43,6 +43,15 @@ describe('Codex CLI provider', () => {
     expect(args.join(' ')).not.toContain('What is citizenship');
   });
   it('ignores non-JSON diagnostics', () => expect(parseCodexEvent('not JSON')).toBeNull());
+  it('uses GPT-6 Luna low and Fast only through isolated per-call overrides', async () => {
+    const args = codexArgs({ ...request, model: 'gpt-6-luna', reasoningEffort: 'low' });
+    expect(args[args.indexOf('--model') + 1]).toBe('gpt-6-luna');
+    expect(args).toContain('--ignore-user-config');
+    expect(args).toContain('model_reasoning_effort="low"');
+    expect(args).toContain('service_tier="fast"');
+    expect(args).toContain('fast_mode');
+    expect(await codexProvider.listModels({ apiKey: null })).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'gpt-6-luna' })]));
+  });
   it('returns only completed answer messages and usage', async () => {
     const child = fakeChild([
       { type: 'item.completed', item: { type: 'reasoning', text: 'hidden' } },

@@ -85,7 +85,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
       {llmProvider?.needsApiKey && (
         <KeyField providerId={llmId} hasKey={!!keyStatus[llmId]} onSaved={setKeyStatus} />
       )}
-      {llmId === 'codex' && <div className="hint">Uses your existing Codex CLI login and account limits; no separate OpenAI API key. GPT-5.6 Luna uses low reasoning + Fast mode (increased credit usage). Answers appear when each CLI message completes. Test connection checks login, not remaining quota.</div>}
+      {llmId === 'codex' && <div className="hint">Uses your existing Codex CLI login and account limits; no separate OpenAI API key. Reasoning: {settings.llm.reasoningEffort ?? 'low'}. Fast mode is enabled only for this app’s isolated CLI calls (increased credit usage); global Codex settings are unchanged. Model access depends on your account. Answers appear when each CLI message completes. Test connection checks login, not remaining quota.</div>}
 
       {llmId === 'ollama' && (
         <div className="field">

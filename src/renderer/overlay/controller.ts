@@ -15,7 +15,7 @@ let sessionId = '';
 let epoch = 0;
 let seq = 0;
 let detecting = false;
-let candidates: QuestionCandidate[] = [];
+let candidates: (QuestionCandidate & { receivedAt: number })[] = [];
 let detectionTimer: ReturnType<typeof setTimeout> | null = null;
 const payloads = new Map<string, AnswerPayload>();
 const expansions = new Map<string, string>();
@@ -78,28 +78,37 @@ function enqueue(q: QuestionCandidate, forced = false): void {
   payloads.set(q.id, { requestId: q.id, profileId: profile.id, sessionId,
     question: q.text, speaker: q.speaker, fullTranscript: q.context,
     newSegment: `[S${q.speaker}] ${q.text}`, forced, detected: true, codeMode: false, userSpeaker: 0 });
-  store().beginAnswer(q.id, q.text, q.speaker);
+  const preceding = q.priorContext?.replace(/\[S\d+\]\s*/g, '').trim();
+  store().beginAnswer(q.id, q.text, q.speaker, preceding
+    ? `${preceding.length > 240 ? '…' : ''}${preceding.slice(-240)}` : undefined);
   window.unseen.sessionRecordQuestion({ text: q.text, speaker: q.speaker,
     profileId: profile.id, sessionId, questionId: q.id });
   queue.enqueue(q); status();
 }
 
 function scheduleDetection(): void {
-  if (!accepting || detecting || detectionTimer || !candidates.length) return;
-  detectionTimer = setTimeout(() => { detectionTimer = null; void detectPending(); }, 150);
+  if (!accepting || detecting || !candidates.length) return;
+  if (detectionTimer) clearTimeout(detectionTimer);
+  // Allow a short continuation, but never debounce continuous speech forever.
+  const remaining = Math.max(0, candidates[0].receivedAt + 2200 - Date.now());
+  detectionTimer = setTimeout(() => { detectionTimer = null; void detectPending(); }, Math.min(750, remaining));
 }
 async function detectPending(): Promise<void> {
   const profile = store().activeProfile;
   if (!accepting || detecting || !profile || !candidates.length) return;
-  const batch = candidates.splice(0, 12);
+  const batch = candidates.splice(0, 12).map(c => ({ ...c, context: transcript.fullTranscript() }));
   const generation = epoch;
   detecting = true; status();
   try {
     const results = store().settings?.questionDetection.provider === 'jev'
-      ? await window.unseen.questionsDetect({ profileId: profile.id, candidates: batch })
+      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch })
       : batch.map(c => ({ id: c.id, probability: evaluateTriggers(profile.triggers, { newText: c.text, recentText: c.context }).fire ? 1 : 0 }));
     if (generation !== epoch || !accepting) return;
-    const accepted = batch.filter(c => results.some(r => r.id === c.id && r.probability >= (store().settings?.questionDetection.threshold ?? 0.8)));
+    const threshold = store().settings?.questionDetection.threshold ?? 0.8;
+    store().addDetectionChecks(batch.map(c => ({ id: c.id, text: c.text,
+      probability: results.find(r => r.id === c.id)!.probability, threshold,
+      passed: results.find(r => r.id === c.id)!.probability >= threshold })));
+    const accepted = batch.filter(c => results.some(r => r.id === c.id && r.probability >= threshold));
     // Professor candidates take available slots first, while cards retain speech order.
     accepted.sort((a, b) => Number(b.speaker === store().professorSpeaker) - Number(a.speaker === store().professorSpeaker));
     for (const q of accepted) enqueue(q);
@@ -173,7 +182,7 @@ export function resetClassroomSession(): void {
   if (listening) { listening = false; client?.stop(); }
   cancelWork(); sessionId = ''; seen.clear();
   transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0;
-  useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, professorSpeaker: null });
+  useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, professorSpeaker: null, detectionChecks: [], detectionCount: 0 });
   pushTranscript(); store().setStatus('idle', 'course changed — press Start');
 }
 
@@ -184,7 +193,7 @@ export function toggleListening(): boolean {
     cancelWork();
     sessionId = '';
     listening = true; accepting = true; seen.clear();
-    useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, sessionError: null });
+    useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, sessionError: null, detectionChecks: [], detectionCount: 0 });
     transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0; pushTranscript();
     setProfessorSpeaker(null);
     const generation = epoch;
@@ -257,14 +266,16 @@ export async function initController(): Promise<void> {
       }
     },
     onEvent: event => {
-      if (event.type === 'interim') { transcript.setInterim(event.text); pushTranscript(); return; }
+      if (event.type === 'interim') { transcript.setInterim(event.text); pushTranscript(); scheduleDetection(); return; }
       const profile = store().activeProfile;
       if (!profile) return;
       window.unseen.sessionRecordFinal({ text: event.text, speaker: event.speaker, profileId: profile.id, sessionId });
       for (const text of questionSpans(event.text)) {
+        for (const pending of candidates) pending.followingContext = `${pending.followingContext ?? ''} [S${event.speaker}] ${text}`.trim().slice(-2500);
+        const priorContext = transcript.fullTranscript();
         transcript.addFinal({ t: Date.now(), text, speaker: event.speaker });
         if (accepting && profile.triggers.auto && text.length >= 4) candidates.push({
-          id: `${epoch}-${++seq}`, text, speaker: event.speaker, context: transcript.fullTranscript(),
+          id: `${epoch}-${++seq}`, text, speaker: event.speaker, context: transcript.fullTranscript(), priorContext, receivedAt: Date.now(),
         });
       }
       pushTranscript(); scheduleDetection();

@@ -202,11 +202,16 @@ export interface QuestionCandidate {
   text: string;
   speaker: number;
   context: string;
+  /** Discussion before this candidate; context above still includes it for answers. */
+  priorContext?: string;
+  /** Speech finalized shortly after the candidate, while the routing timer settles. */
+  followingContext?: string;
   priority?: number;
 }
 
 export interface QuestionBatch {
   profileId: string;
+  sessionId?: string;
   candidates: QuestionCandidate[];
 }
 
@@ -271,6 +276,7 @@ export interface DistillResult {
 // ---- Sessions ----
 
 export type SessionEvent =
+  | { t: number; type: 'question-check'; questionId: string; profileId: string; text: string; probability: number; threshold: number; passed: boolean; elapsedMs: number; promptVersion: string }
   | { t: number; type: 'speaker-label'; speaker: number | null; label: 'Professor'; profileId: string }
   | { t: number; type: 'start'; version: string; profileId?: string; profileName?: string }
   | { t: number; type: 'final'; text: string; speaker: number; profileId?: string }

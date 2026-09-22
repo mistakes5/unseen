@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
         'find-generic-password', '-a', userInfo().username, '-s', 'TYPESAFE_API_KEY', '-w',
       ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000 }).trim();
       if (!key) throw new Error('Keychain entry empty');
-      settings().set({ llm: { provider: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'low', fallbacks: [] }, questionDetection: { provider: 'jev' } });
+      settings().set({ llm: { provider: 'codex', model: 'gpt-6-luna', reasoningEffort: 'low', fallbacks: [] }, questionDetection: { provider: 'jev' } });
       setSecret('typesafe', key);
       console.info('[setup] Codex configured; TypeSafe key imported into encrypted storage.');
     } catch {

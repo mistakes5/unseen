@@ -67,6 +67,15 @@ describe('buildAnswerRequest', () => {
     expect(req.messages[0].content).toContain('CODE MODE');
   });
 
+  it('answers already-detected participation invitations without repeating the strict completion gate', () => {
+    const req = buildAnswerRequest({ ...baseOpts, detected: true });
+    expect(req.messages[0].content).toContain('already passed the discussion detector');
+    expect(req.messages[0].content).toContain('Readings are optional support');
+    expect(req.messages[0].content).toContain('not a yes/no about volunteering');
+    expect(req.messages[0].content).not.toContain('Reply SKIP for incomplete prompts');
+    expect(buildAnswerRequest({ ...baseOpts, detected: true, forced: true }).messages[0].content).toContain('Do NOT skip');
+  });
+
   it('profile llm overrides beat global settings', () => {
     const req = buildAnswerRequest({
       ...baseOpts,

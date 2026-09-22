@@ -3,7 +3,7 @@ import type { Settings } from './types';
 export const DEFAULT_SETTINGS: Settings = {
   llm: {
     provider: 'codex',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     reasoningEffort: 'low',
     maxTokens: 2000,
     temperature: null,

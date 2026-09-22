@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/shared/constants';
-import type { AnswerPayload, Profile } from '../src/shared/types';
+import type { AnswerPayload, Profile, QuestionBatch } from '../src/shared/types';
 import type { SttClientOpts } from '../src/renderer/overlay/stt/client';
 
 const mock = vi.hoisted(() => ({ opts: null as SttClientOpts | null, start: vi.fn(), stop: vi.fn() }));
@@ -26,23 +26,55 @@ beforeEach(() => {
     answerStart: vi.fn().mockResolvedValue({ ok: true }), answerCancel: vi.fn().mockResolvedValue(undefined),
     questionsCancel: vi.fn().mockResolvedValue(undefined),
     questionsDetect: vi.fn(async batch => batch.candidates.map((c: any) => ({ id: c.id, probability: 0.99 }))),
-  };
+};
   for (const event of ['SettingsChanged', 'ProfilesChanged', 'AnswerDelta', 'AnswerDone', 'AnswerError', 'SessionError', 'ForceAnswer', 'TogglePause']) api[`on${event}`] = (cb: any) => { listeners[event] = cb; };
   vi.stubGlobal('window', { unseen: api });
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+it('waits for nearby finalized speech before detecting and sends the completed context to answers', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'Why do people', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(api.questionsDetect).not.toHaveBeenCalled();
+  mock.opts!.onEvent({ type: 'final', text: 'follow the group?', speaker: 1 });
+  await vi.advanceTimersByTimeAsync(749);
+  expect(api.questionsDetect).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(2);
+  const batch = api.questionsDetect.mock.calls[0][0];
+  expect(batch.candidates[0].followingContext).toContain('follow the group?');
+  expect(batch.candidates[0].priorContext).not.toContain('follow the group?');
+  expect(api.answerStart.mock.calls[0][0].fullTranscript).toContain('follow the group?');
+  expect(api.answerStart.mock.calls[0][0].question).toBe('Why do people');
+});
+
+it('caps the settling delay during continuous interim speech and Ask now bypasses it', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'Can anyone explain this?', speaker: 0 });
+  for (let i = 0; i < 4; i++) {
+    await vi.advanceTimersByTimeAsync(500);
+    mock.opts!.onEvent({ type: 'interim', text: 'An ongoing continuation' });
+  }
+  expect(api.questionsDetect).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(201);
+  expect(api.questionsDetect).toHaveBeenCalledOnce();
+  c.askNow();
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+});
 
 it('keeps transcribing while two answers run, prioritizes professor, routes out-of-order events, and cancels stale work', async () => {
   const c = await import('../src/renderer/overlay/controller');
   const { useOverlayStore } = await import('../src/renderer/overlay/store');
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'What is turnout? What predicts vote choice?', speaker: 0 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   expect(api.answerStart).toHaveBeenCalledTimes(2);
   c.setProfessorSpeaker(2);
   mock.opts!.onEvent({ type: 'final', text: 'Can you explain correlation?', speaker: 1 });
   mock.opts!.onEvent({ type: 'final', text: 'Why is correlation not causation?', speaker: 2 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   expect(api.sessionRecordFinal).toHaveBeenCalledTimes(3);
   expect(api.sessionRecordQuestion).toHaveBeenCalledTimes(4);
   expect(api.answerStart).toHaveBeenCalledTimes(2);
@@ -73,7 +105,7 @@ it('invalidates an outstanding detection on course switch and clears professor a
   mock.opts!.onStatus({ state: 'reconnecting' });
   expect(useOverlayStore.getState().professorSpeaker).toBeNull();
   mock.opts!.onEvent({ type: 'final', text: 'What is identity?', speaker: 1 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   const id = api.questionsDetect.mock.calls[0][0].candidates[0].id;
   c.resetClassroomSession(); resolve([{ id, probability: 0.99 }]);
   await vi.advanceTimersByTimeAsync(1);
@@ -96,7 +128,7 @@ it('expands the selected answer in place while listening, deduplicates clicks, a
   const { useOverlayStore } = await import('../src/renderer/overlay/store');
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'What is identity?', speaker: 1 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   const q = api.answerStart.mock.calls[0][0];
   listeners.AnswerDelta({ requestId: q.requestId, text: 'Short original.' });
   listeners.AnswerDone({ requestId: q.requestId, usage: null });
@@ -107,7 +139,7 @@ it('expands the selected answer in place while listening, deduplicates clicks, a
   expect(expansion.fullTranscript).toBe('');
   expect(c.isListening()).toBe(true);
   mock.opts!.onEvent({ type: 'final', text: 'What is nationalism?', speaker: 0 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   expect(api.answerStart).toHaveBeenCalledTimes(3);
   listeners.AnswerDelta({ requestId: expansion.requestId, text: 'Expanded explanation.' });
   listeners.AnswerDone({ requestId: expansion.requestId, usage: { inputTokens: 1, outputTokens: 1, estimatedCost: 0.01 } });
@@ -126,7 +158,7 @@ it('cancels only expansion display state without losing the original and permits
   const { useOverlayStore } = await import('../src/renderer/overlay/store');
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'What is identity?', speaker: 1 });
-  await vi.advanceTimersByTimeAsync(151);
+  await vi.advanceTimersByTimeAsync(751);
   const q = api.answerStart.mock.calls[0][0];
   listeners.AnswerDelta({ requestId: q.requestId, text: 'Original.' });
   listeners.AnswerDone({ requestId: q.requestId, usage: null });
@@ -140,4 +172,56 @@ it('cancels only expansion display state without losing the original and permits
   c.resetClassroomSession();
   listeners.AnswerDone({ requestId: api.answerStart.mock.calls[2][0].requestId, usage: null });
   expect(useOverlayStore.getState().answers).toEqual([]);
+});
+
+it('uses preceding speech for detection, preserves full answer context, and exposes real rejected scores', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map(q => ({
+    id: q.id, probability: q.text.endsWith('?') ? 0.95 : 0.12,
+  })));
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'The reading discusses group comparisons.', speaker: 1 });
+  await vi.advanceTimersByTimeAsync(751);
+  mock.opts!.onEvent({ type: 'final', text: 'What do you remember from that section? Like,', speaker: 1 });
+  await vi.advanceTimersByTimeAsync(751);
+  const batch = api.questionsDetect.mock.calls[1][0];
+  expect(batch.sessionId).toBe('canadian-politics/test-session');
+  expect(batch.candidates[0].priorContext).toContain('The reading discusses group comparisons.');
+  expect(batch.candidates[0].priorContext).not.toContain('What do you remember');
+  expect(batch.candidates[0].context).toContain('What do you remember from that section?');
+  expect(batch.candidates[1].priorContext).toContain('What do you remember from that section?');
+  expect(api.answerStart).toHaveBeenCalledOnce();
+  expect(api.answerStart.mock.calls[0][0].fullTranscript).toContain('The reading discusses group comparisons.');
+  const state = useOverlayStore.getState();
+  expect(state.detectionCount).toBe(3);
+  expect(state.detectionChecks[0]).toMatchObject({ text: 'Like,', probability: 0.12, passed: false });
+  expect(state.detectionChecks[1]).toMatchObject({ probability: 0.95, passed: true });
+  c.resetClassroomSession();
+  expect(useOverlayStore.getState().detectionCount).toBe(0);
+  expect(useOverlayStore.getState().detectionChecks).toEqual([]);
+});
+
+it('routes an informal participation invitation without a question mark into an answer using the discussion context', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map(q => ({
+    id: q.id, probability: q.text.startsWith('Anyone') ? 0.92 : 0.1,
+  })));
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  c.setProfessorSpeaker(0);
+  mock.opts!.onEvent({ type: 'final', text: 'The chapter contrasts group loyalty with individual conscience.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  mock.opts!.onEvent({ type: 'final', text: 'Anyone who read it wanna demonstrate before I explain it', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  expect(api.answerStart).toHaveBeenCalledOnce();
+  const request = api.answerStart.mock.calls[0][0];
+  expect(request.question).toBe('Anyone who read it wanna demonstrate before I explain it');
+  expect(request.fullTranscript).toContain('group loyalty with individual conscience');
+  expect(request.detected).toBe(true);
+  listeners.AnswerDelta({ requestId: request.requestId, text: 'Group loyalty can pressure people to act against their conscience.' });
+  listeners.AnswerDone({ requestId: request.requestId, usage: null });
+  expect(useOverlayStore.getState().answers[0]).toMatchObject({ phase: 'done', speaker: 0,
+    text: 'Group loyalty can pressure people to act against their conscience.' });
+  expect(mock.stop).not.toHaveBeenCalled();
 });

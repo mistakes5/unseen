@@ -47,7 +47,10 @@ export const codexProvider: LlmProvider = {
   id: 'codex',
   displayName: 'OpenAI via Codex CLI (existing login)',
   needsApiKey: false,
-  async listModels() { return [{ id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna · low reasoning · Fast' }]; },
+  async listModels() { return [
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna · low reasoning · Fast' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna · low reasoning · Fast' },
+  ]; },
   async verify() {
     try {
       const { stdout, stderr } = await execFileAsync(codexExecutable(), ['login', 'status'], { timeout: 8000 });

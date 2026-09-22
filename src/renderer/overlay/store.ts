@@ -9,12 +9,21 @@ export interface AnswerItem {
   done: boolean;
   error?: string;
   question?: string;
+  contextHint?: string;
   speaker?: number;
   phase?: 'queued' | 'answering' | 'done' | 'cancelled' | 'skipped' | 'error';
   expansion?: { text: string; phase: 'queued' | 'answering' | 'done' | 'error'; error?: string; visible: boolean };
 }
 
 export type StatusKind = 'idle' | 'live' | 'thinking' | 'paused' | 'error';
+
+export interface DetectionCheck {
+  id: string;
+  text: string;
+  probability: number;
+  threshold: number;
+  passed: boolean;
+}
 
 interface OverlayState {
   status: { kind: StatusKind; text: string };
@@ -28,10 +37,13 @@ interface OverlayState {
   activeProfile: Profile | null;
   professorSpeaker: number | null;
   sessionError: string | null;
+  detectionChecks: DetectionCheck[];
+  detectionCount: number;
+  addDetectionChecks(checks: DetectionCheck[]): void;
 
   setStatus(kind: StatusKind, text: string): void;
   setTranscript(turns: TranscriptTurn[], interim: string): void;
-  beginAnswer(id: string | number, question?: string, speaker?: number): void;
+  beginAnswer(id: string | number, question?: string, speaker?: number, contextHint?: string): void;
   setAnswerPhase(id: string | number, phase: NonNullable<AnswerItem['phase']>): void;
   appendAnswer(id: string | number, delta: string): void;
   finishAnswer(id: string | number, opts: { discard?: boolean; error?: string; usage?: Usage | null }): void;
@@ -54,16 +66,20 @@ export const useOverlayStore = create<OverlayState>((set) => ({
   activeProfile: null,
   professorSpeaker: null,
   sessionError: null,
+  detectionChecks: [],
+  detectionCount: 0,
+  addDetectionChecks: checks => set(s => ({ detectionChecks: [...checks.slice().reverse(), ...s.detectionChecks].slice(0, 20), detectionCount: s.detectionCount + checks.length })),
 
   setStatus: (kind, text) => set({ status: { kind, text } }),
   setTranscript: (turns, interim) => set({ turns, interim }),
 
-  beginAnswer: (id, question, speaker) =>
+  beginAnswer: (id, question, speaker, contextHint) =>
     set((s) => ({
       answers: [
         {
           id,
           question,
+          contextHint,
           speaker,
           phase: 'queued' as const,
           ts: new Date().toLocaleTimeString([], {

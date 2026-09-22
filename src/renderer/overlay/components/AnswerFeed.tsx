@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useOverlayStore } from '../store';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import { useOverlayStore, type AnswerItem } from '../store';
 import { renderMarkdown } from '../markdown';
 import { expandAnswer } from '../controller';
 
@@ -25,35 +25,51 @@ export function AnswerFeed(): React.JSX.Element {
   const labels = useOverlayStore(s => s.settings?.stt.diarize ?? false);
   const ref = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
-  useEffect(() => { if (ref.current) ref.current.scrollTop = 0; setShowScrollBtn(false); }, [answers.length]);
+  const nearTop = useRef(true);
+  const previous = useRef({ count: 0, height: 0 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (answers.length > previous.current.count) {
+      if (nearTop.current) { el.scrollTop = 0; setShowScrollBtn(false); }
+      else { el.scrollTop += el.scrollHeight - previous.current.height; setShowScrollBtn(true); }
+    }
+    previous.current = { count: answers.length, height: el.scrollHeight };
+  });
+  const quiet = answers.filter(a => a.phase === 'skipped' || a.phase === 'cancelled');
+  const visible = answers.filter(a => a.phase !== 'skipped' && a.phase !== 'cancelled');
+  const phaseLabel = (a: AnswerItem): string => a.phase === 'answering' ? 'Answering…'
+    : a.phase === 'queued' ? 'Queued' : a.phase === 'error' ? 'Needs attention' : 'Ready';
 
   return (
     <>
       <div
         id="answers"
         ref={ref}
-        onScroll={(e) => setShowScrollBtn(e.currentTarget.scrollTop > 30)}
+        onScroll={(e) => { nearTop.current = e.currentTarget.scrollTop <= 30; setShowScrollBtn(!nearTop.current); }}
       >
-        {answers.length === 0 && (
+        {visible.length === 0 && (
           <div className="empty-hint">
             Answers appear here when a question is detected — or hit “Ask now” to answer the
             latest thing said.
           </div>
         )}
-        {answers.map((a) => (
-          <div className="answer-item" key={a.id}>
+        {visible.map((a) => (
+          <article className={`answer-item phase-${a.phase ?? 'done'}`} key={a.id}>
             <div className="meta">
-              <span>{a.ts} · {labels && a.speaker !== undefined ? `${a.speaker === professor ? 'Professor' : `S${a.speaker}`} · ` : ''}{a.phase ?? (a.done ? 'done' : 'answering')}</span>
+              <span>{a.ts}{labels && a.speaker !== undefined ? ` · ${a.speaker === professor ? 'Professor' : `S${a.speaker}`}` : ''}</span>
+              <span className={`phase-badge ${a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
               {a.text && <CopyButton text={a.text} />}
             </div>
-            {a.question && <div style={{ fontWeight: 600, margin: '4px 0 6px' }}>{a.question}</div>}
+            {a.question && <div className="question-text">{a.question}</div>}
+            {a.contextHint && <details className="question-context"><summary>Discussion context</summary><div>{a.contextHint}</div></details>}
             {a.error ? (
               <span className="err">error: {a.error}</span>
             ) : (
               <div
                 className="body"
                 // renderMarkdown escapes all model output before injecting.
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(a.phase === 'skipped' ? 'No answer generated — skipped.' : a.text) }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(a.text) }}
               />
             )}
             {a.phase === 'done' && a.text && <button className="ghost-btn"
@@ -63,13 +79,16 @@ export function AnswerFeed(): React.JSX.Element {
                 : a.expansion?.phase === 'done' ? a.expansion.visible ? 'Collapse' : 'Show expanded'
                 : a.expansion?.phase === 'error' ? 'Retry expansion' : 'Expand'}
             </button>}
-            {a.expansion?.visible && <div style={{ borderTop: '1px solid currentColor', marginTop: 8, paddingTop: 8 }}>
+            {a.expansion?.visible && <div className="expanded-answer">
               <div className="meta"><span>Expanded explanation</span>{a.expansion.text && <CopyButton text={a.expansion.text} />}</div>
               {a.expansion.error && <span className="err">{a.expansion.error}</span>}
               <div className="body" dangerouslySetInnerHTML={{ __html: renderMarkdown(a.expansion.text) }} />
             </div>}
-          </div>
+          </article>
         ))}
+        {quiet.length > 0 && <details className="quiet-answers"><summary>{quiet.length} skipped or cancelled · show history</summary>
+          {quiet.map(a => <div key={a.id} className="quiet-answer"><span>{a.ts} · {a.phase}</span><div>{a.question}</div></div>)}
+        </details>}
       </div>
       {showScrollBtn && (
         <button
@@ -77,6 +96,7 @@ export function AnswerFeed(): React.JSX.Element {
           onClick={() => {
             const el = ref.current;
             if (el) el.scrollTop = 0;
+            nearTop.current = true;
             setShowScrollBtn(false);
           }}
         >

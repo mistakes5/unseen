@@ -13,15 +13,16 @@ export function Transcript(): React.JSX.Element {
   const speakers = [...new Set(turns.map(t => t.speaker))].sort((a, b) => a - b);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, maxHeight: 170, flexShrink: 0 }}>
-      {labels ? <label style={{ padding: '6px 10px', fontSize: 12 }}>
-        Professor voice: {' '}
+    <details className="transcript-panel" open>
+      <summary>Live transcript <span className="panel-note">{labels ? 'speaker labels on' : 'speaker labels off'}</span></summary>
+      {labels && <label className="speaker-control">
+        Prioritize {' '}
         <select aria-label="Professor voice" value={professor ?? ''} onChange={e => setProfessorSpeaker(e.target.value === '' ? null : Number(e.target.value))}>
-          <option value="">Select after hearing them speak</option>
+          <option value="">Choose professor’s speaker</option>
           {speakers.map(s => <option key={s} value={s}>Speaker S{s}</option>)}
         </select>
-        {professor !== null && <span> · professor questions first</span>}
-      </label> : <span style={{ padding: '6px 10px', fontSize: 12 }}>Speaker labels off</span>}
+        {professor !== null && <span className="panel-note">Professor first</span>}
+      </label>}
       {sessionError && <div role="alert" style={{ color: '#ff8080', padding: 8 }}>{sessionError}</div>}
       <div id="transcript" ref={ref}>
       {turns.length === 0 && !interim ? (
@@ -30,13 +31,13 @@ export function Transcript(): React.JSX.Element {
         <>
           {turns.map((t, i) => (
             <div key={i}>
-              {labels && `[${t.speaker === professor ? `Professor · S${t.speaker}` : `S${t.speaker}`}] `}{t.text}
+              {labels && <span className="speaker-label">{t.speaker === professor ? `Professor · S${t.speaker}` : `S${t.speaker}`} </span>}{t.text}
             </div>
           ))}
           {interim && <span className="interim">{interim}</span>}
         </>
       )}
       </div>
-    </div>
+    </details>
   );
 }

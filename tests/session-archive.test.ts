@@ -8,6 +8,17 @@ const dirs: string[] = [];
 function setup() { const dir = mkdtempSync(join(tmpdir(), 'classroom-archive-test-')); dirs.push(dir); return { dir, archive: new SessionArchive(dir) }; }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 describe('class-indexed durable transcripts and answers', () => {
+  it('persists rejected detector scores without counting them as accepted questions or answers', () => {
+    const { dir, archive } = setup();
+    const id = archive.begin('course-a', 'Course A', 'test');
+    const check = { type: 'question-check' as const, t: 2, questionId: 'q1', profileId: 'course-a',
+      text: 'A test utterance.', probability: 0.42, threshold: 0.65, passed: false,
+      elapsedMs: 170, promptVersion: 'classroom-invitation-v2' };
+    archive.append(id, check);
+    const reopened = new SessionArchive(dir);
+    expect(reopened.read(id).at(-1)).toEqual(check);
+    expect(reopened.list()[0]).toMatchObject({ questions: 0, answers: 0, finals: 0 });
+  });
   it('links questions/answers, isolates courses, and survives a fresh archive instance', () => {
     const { dir, archive } = setup();
     const idA = archive.begin('course-a', 'Course A', 'test');

@@ -3,6 +3,7 @@ import { useOverlayStore } from './store';
 import { askNow, togglePause, toggleListening, isListening } from './controller';
 import { Transcript } from './components/Transcript';
 import { AnswerFeed } from './components/AnswerFeed';
+import { DetectionStatus } from './components/DetectionStatus';
 
 export function App(): React.JSX.Element {
   const status = useOverlayStore((s) => s.status);
@@ -23,6 +24,8 @@ export function App(): React.JSX.Element {
 
   const privacyOn = settings?.overlay.privacyMode ?? true;
   const fontSize = settings?.overlay.fontSize ?? 13;
+  const captureKind = status.kind === 'error' ? 'error' : paused ? 'paused'
+    : listening && (status.kind === 'live' || status.kind === 'thinking') ? 'live' : 'idle';
 
   const onProfileChange = async (id: string): Promise<void> => {
     const profile = await window.unseen.profilesSetActive(id);
@@ -44,11 +47,7 @@ export function App(): React.JSX.Element {
             </option>
           ))}
         </select>
-        <div className="status">
-          <span className={`dot ${status.kind === 'idle' ? '' : status.kind}`} />
-          <span className="status-text" title={status.text}>
-            {status.text}
-          </span>
+        <div className="window-controls">
           <button
             className={`ghost-btn ${privacyOn ? 'active' : ''}`}
             title={
@@ -60,6 +59,17 @@ export function App(): React.JSX.Element {
           >
             {privacyOn ? '🙈' : '👁'}
           </button>
+          <button className="ghost-btn" title="Minimize" aria-label="Minimize" onClick={() => void window.unseen.overlayMinimize()}>—</button>
+          <button className="ghost-btn" title="Settings" aria-label="Settings" onClick={() => void window.unseen.openSettings()}>⚙</button>
+          <button className="ghost-btn" title="Quit Unseen" aria-label="Quit Unseen" onClick={() => void window.unseen.quit()}>✕</button>
+        </div>
+      </header>
+      <div className="capture-bar">
+        <div className="capture-status" role="status">
+          <span className={`dot ${captureKind}`} />
+          <span className="status-text">{status.text}</span>
+        </div>
+        <div className="capture-actions">
           <button
             className={`ghost-btn ${listening ? 'active' : ''}`}
             title={listening ? 'Stop listening' : 'Start listening'}
@@ -83,32 +93,11 @@ export function App(): React.JSX.Element {
           <button className="ghost-btn" title="Answer the latest thing said" onClick={askNow}>
             Ask now
           </button>
-          <button
-            className="ghost-btn"
-            title="Minimize"
-            onClick={() => void window.unseen.overlayMinimize()}
-          >
-            —
-          </button>
-          <button
-            className="ghost-btn"
-            title="Settings"
-            onClick={() => void window.unseen.openSettings()}
-          >
-            ⚙
-          </button>
-          <button
-            className="ghost-btn"
-            title="Quit Unseen"
-            onClick={() => void window.unseen.quit()}
-          >
-            ✕
-          </button>
         </div>
-      </header>
+      </div>
 
-      <div className="section-label">Transcript</div>
       <Transcript />
+      <DetectionStatus />
 
       <div className="section-label">Answers</div>
       <AnswerFeed />
