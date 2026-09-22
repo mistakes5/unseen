@@ -164,6 +164,7 @@ export interface MeetilyPoll {
 
 export interface WordTiming {
   word: string;
+  punctuated_word?: string;
   start: number;
   end: number;
   speaker?: number;
@@ -176,6 +177,14 @@ export type TranscriptEvent =
 // ---- Answer flow ----
 
 export interface AnswerPayload {
+  /** Expand a completed answer using its main-process context snapshot. */
+  expandAnswerId?: string;
+  requestId?: string;
+  profileId?: string;
+  sessionId?: string;
+  question?: string;
+  speaker?: number;
+  detected?: boolean;
   fullTranscript: string;
   newSegment: string;
   forced: boolean;
@@ -184,7 +193,21 @@ export interface AnswerPayload {
 }
 
 export interface AnswerDone {
+  requestId?: string;
   usage: Usage | null;
+}
+
+export interface QuestionCandidate {
+  id: string;
+  text: string;
+  speaker: number;
+  context: string;
+  priority?: number;
+}
+
+export interface QuestionBatch {
+  profileId: string;
+  candidates: QuestionCandidate[];
 }
 
 // ---- Profiles (validated shape; schema lives in profile-schema.ts) ----
@@ -248,8 +271,11 @@ export interface DistillResult {
 // ---- Sessions ----
 
 export type SessionEvent =
-  | { t: number; type: 'start'; version: string }
-  | { t: number; type: 'final'; text: string; speaker: number }
+  | { t: number; type: 'speaker-label'; speaker: number | null; label: 'Professor'; profileId: string }
+  | { t: number; type: 'start'; version: string; profileId?: string; profileName?: string }
+  | { t: number; type: 'final'; text: string; speaker: number; profileId?: string }
+  | { t: number; type: 'question'; text: string; questionId: string; profileId: string; speaker?: number }
+  | { t: number; type: 'answer-status'; questionId: string; profileId: string; status: 'cancelled' | 'error' | 'skipped'; text: string }
   | {
       t: number;
       type: 'answer';
@@ -257,6 +283,9 @@ export type SessionEvent =
       profileId: string;
       forced: boolean;
       usage?: Usage | null;
+      questionId?: string;
+      question?: string;
+      expandedFrom?: string;
     };
 
 export interface SessionMeta {
@@ -265,4 +294,7 @@ export interface SessionMeta {
   endedAt: number;
   finals: number;
   answers: number;
+  questions?: number;
+  profileId?: string;
+  profileName?: string;
 }

@@ -1,101 +1,50 @@
-import { app, dialog, shell } from 'electron';
-import { join } from 'path';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'fs';
-import type { SessionEvent, SessionMeta } from '../../shared/types';
+import { app, dialog, shell, webContents } from 'electron';
+import { join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import type { SessionEvent } from '../../shared/types';
+import { IPC } from '../../shared/ipc-contract';
 import { settings } from './settings';
+import { getActiveProfile } from './profiles';
 import { sessionToMarkdown } from './session-export';
+import { SessionArchive } from './session-archive';
 
-// One JSONL file per app run, created lazily on the first recorded event so
-// silent launches don't litter the sessions folder. Local-only, plain text —
-// the user can read, grep, or delete everything.
-
-let currentFile: string | null = null;
-
+let currentId: string | null = null;
+let currentProfile: string | null = null;
+let archive: SessionArchive | null = null;
 export function sessionsDir(): string {
   const dir = join(app.getPath('userData'), 'sessions');
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return dir;
+  mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir;
 }
-
-export function recordEvent(ev: SessionEvent): void {
+function store(): SessionArchive { return archive ??= new SessionArchive(sessionsDir()); }
+export function beginSession(): string {
+  const p = getActiveProfile(); currentProfile = p.id;
+  if (!settings().get().sessions.autoSave) { currentId = null; return ''; }
+  return currentId = store().begin(p.id, p.name, app.getVersion());
+}
+export function recordEvent(ev: SessionEvent, sessionId?: string): void {
   if (!settings().get().sessions.autoSave) return;
   try {
-    if (!currentFile) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      currentFile = join(sessionsDir(), `${stamp}.jsonl`);
-      appendFileSync(
-        currentFile,
-        JSON.stringify({ t: Date.now(), type: 'start', version: app.getVersion() }) + '\n',
-      );
+    if (sessionId) {
+      if ('profileId' in ev && ev.profileId && !sessionId.startsWith(`${ev.profileId}/`)) throw new Error('Session/course mismatch');
+      store().append(sessionId, ev); return;
     }
-    appendFileSync(currentFile, JSON.stringify(ev) + '\n');
+    if (!currentId || currentProfile !== getActiveProfile().id) beginSession();
+    if (currentId) store().append(currentId, ev);
   } catch (err) {
     console.error('[sessions] record failed:', err);
+    for (const wc of webContents.getAllWebContents()) wc.send(IPC.evSessionError, 'Could not save this session event. Check free disk space and folder permissions.');
   }
 }
-
-export function readSession(id: string): SessionEvent[] {
-  const path = join(sessionsDir(), `${id}.jsonl`);
-  const events: SessionEvent[] = [];
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      events.push(JSON.parse(line) as SessionEvent);
-    } catch {
-      /* skip torn line (e.g. crash mid-write) */
-    }
-  }
-  return events;
-}
-
-export function listSessions(): SessionMeta[] {
-  const metas: SessionMeta[] = [];
-  for (const file of readdirSync(sessionsDir())) {
-    if (!file.endsWith('.jsonl')) continue;
-    const id = file.replace(/\.jsonl$/, '');
-    try {
-      const events = readSession(id);
-      if (events.length === 0) continue;
-      metas.push({
-        id,
-        startedAt: events[0].t,
-        endedAt: events[events.length - 1].t,
-        finals: events.filter((e) => e.type === 'final').length,
-        answers: events.filter((e) => e.type === 'answer').length,
-      });
-    } catch (err) {
-      console.error('[sessions] cannot read', file, err);
-    }
-  }
-  return metas.sort((a, b) => b.startedAt - a.startedAt);
-}
-
+export function readSession(id: string) { return store().read(id); }
+export function listSessions() { return store().list(); }
+export function searchSessions(profileId: string, query: string) { return store().search(profileId, query); }
 export async function exportSession(id: string): Promise<{ ok: boolean; path?: string }> {
-  const md = sessionToMarkdown(readSession(id));
-  const res = await dialog.showSaveDialog({
-    title: 'Export session as Markdown',
-    defaultPath: join(app.getPath('documents'), `unseen-session-${id}.md`),
-    filters: [{ name: 'Markdown', extensions: ['md'] }],
-  });
+  const res = await dialog.showSaveDialog({ title: 'Export class session',
+    defaultPath: join(app.getPath('documents'), `unseen-${id.replaceAll('/', '-')}.md`),
+    filters: [{ name: 'Markdown', extensions: ['md'] }] });
   if (res.canceled || !res.filePath) return { ok: false };
-  writeFileSync(res.filePath, md);
+  writeFileSync(res.filePath, sessionToMarkdown(readSession(id)), { mode: 0o600 });
   return { ok: true, path: res.filePath };
 }
-
-export function deleteSession(id: string): void {
-  const path = join(sessionsDir(), `${id}.jsonl`);
-  if (existsSync(path)) rmSync(path);
-  if (currentFile === path) currentFile = null;
-}
-
-export function openSessionsFolder(): void {
-  void shell.openPath(sessionsDir());
-}
+export function deleteSession(id: string): void { store().delete(id); if (currentId === id) currentId = null; }
+export function openSessionsFolder(): void { void shell.openPath(sessionsDir()); }

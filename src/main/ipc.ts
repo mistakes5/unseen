@@ -1,6 +1,6 @@
 import { app, ipcMain, dialog } from 'electron';
 import { IPC } from '../shared/ipc-contract';
-import type { AnswerPayload, DeepPartial, Settings } from '../shared/types';
+import type { AnswerPayload, DeepPartial, Settings, QuestionBatch } from '../shared/types';
 import { settings } from './services/settings';
 import { setSecret, secretsStatus } from './services/secrets';
 import {
@@ -18,6 +18,8 @@ import {
   exportSession,
   deleteSession,
   openSessionsFolder,
+  beginSession,
+  searchSessions,
 } from './services/sessions';
 import { getLlmProvider, listLlmProviders, providerContext } from './services/llm/registry';
 import { runAnswer, cancelAnswer } from './services/llm/run-answer';
@@ -42,6 +44,10 @@ import type { Namespace } from '../shared/types';
 import { meetilyReader } from './services/stt/meetily';
 import { stopLocalTranscription } from './services/stt/whisperlivekit';
 import { withOverlayReplay } from './services/overlay-replay';
+import { detectQuestions } from './services/question-detection';
+import { getSecret } from './services/secrets';
+
+const detections = new Set<AbortController>();
 
 export function registerIpc(): void {
   ipcMain.handle(IPC.settingsGet, () => settings().get());
@@ -63,6 +69,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.profilesDelete, (_e, id: string) => deleteProfile(id));
   ipcMain.handle(IPC.knowledgeImport, () => importKnowledgeFiles());
   ipcMain.handle(IPC.profilesSetActive, (_e, id: string) => {
+    cancelAnswer();
+    for (const c of detections) c.abort();
     settings().set({ activeProfile: id });
     return getActiveProfile();
   });
@@ -110,6 +118,15 @@ export function registerIpc(): void {
     return { ok: true };
   });
   ipcMain.handle(IPC.answerCancel, () => cancelAnswer());
+  ipcMain.handle(IPC.questionsDetect, async (_e, batch: QuestionBatch) => {
+    if (batch.profileId !== settings().get().activeProfile) throw new Error('Class changed');
+    const key = getSecret('typesafe');
+    if (!key) throw new Error('Add your TypeSafe key in Settings → Providers.');
+    const controller = new AbortController(); detections.add(controller);
+    try { return await detectQuestions(batch, key, controller.signal); }
+    finally { detections.delete(controller); }
+  });
+  ipcMain.handle(IPC.questionsCancel, () => { for (const c of detections) c.abort(); detections.clear(); });
 
   // Dictation: renderer streams the raw STT buffer here for the cleanup pass.
   ipcMain.handle(IPC.dictationCleanup, (event, rawText: string) => {
@@ -199,13 +216,20 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.quit, () => app.quit());
 
   // Sessions: transcript finals arrive fire-and-forget from the overlay.
-  ipcMain.on(IPC.sessionFinal, (_e, ev: { text: string; speaker: number }) => {
-    recordEvent({ t: Date.now(), type: 'final', text: ev.text, speaker: ev.speaker });
-    // Meeting transcript also feeds the daily memory log (Phase 2).
-    if (settings().get().sessions.autoSave && ev.text.trim()) {
-      appendLogEvent({ t: Date.now(), kind: 'meeting', ns: 'personal', text: ev.text.trim() });
-    }
+  ipcMain.handle(IPC.sessionBegin, () => beginSession());
+  ipcMain.on(IPC.sessionSpeaker, (_e, ev: { speaker: number | null; profileId: string; sessionId: string }) => {
+    recordEvent({ t: Date.now(), type: 'speaker-label', label: 'Professor', speaker: ev.speaker, profileId: ev.profileId }, ev.sessionId);
   });
+  ipcMain.on(IPC.sessionFinal, (_e, ev: { text: string; speaker: number; profileId: string; sessionId: string }) => {
+    recordEvent({ t: Date.now(), type: 'final', text: ev.text, speaker: ev.speaker, profileId: ev.profileId }, ev.sessionId);
+  });
+  ipcMain.on(IPC.sessionQuestion, (_e, ev: { text: string; speaker: number; profileId: string; sessionId: string; questionId: string }) => {
+    recordEvent({ t: Date.now(), type: 'question', text: ev.text, speaker: ev.speaker, profileId: ev.profileId, questionId: ev.questionId }, ev.sessionId);
+  });
+  ipcMain.on(IPC.sessionStatus, (_e, ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' }) => {
+    recordEvent({ t: Date.now(), type: 'answer-status', text: ev.text, profileId: ev.profileId, questionId: ev.questionId, status: ev.status }, ev.sessionId);
+  });
+  ipcMain.handle(IPC.sessionsSearch, (_e, profileId: string, query: string) => searchSessions(profileId, query));
   ipcMain.handle(IPC.sessionsList, () => listSessions());
   ipcMain.handle(IPC.sessionsExport, (_e, id: string) => exportSession(id));
   ipcMain.handle(IPC.sessionsDelete, (_e, id: string) => deleteSession(id));

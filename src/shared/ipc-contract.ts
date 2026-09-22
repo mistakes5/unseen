@@ -23,6 +23,8 @@ export const IPC = {
   sttDescriptorDictation: 'stt:descriptor-dictation',
   answerStart: 'answer:start',
   answerCancel: 'answer:cancel',
+  questionsDetect: 'questions:detect',
+  questionsCancel: 'questions:cancel',
   openSettings: 'window:open-settings',
   setPrivacyMode: 'overlay:set-privacy',
   overlayMinimize: 'overlay:minimize',
@@ -48,6 +50,11 @@ export const IPC = {
 
   // sessions
   sessionFinal: 'session:final', // fire-and-forget (ipcRenderer.send)
+  sessionBegin: 'session:begin',
+  sessionQuestion: 'session:question',
+  sessionStatus: 'session:answer-status',
+  sessionSpeaker: 'session:speaker-label',
+  sessionsSearch: 'sessions:search',
   sessionsList: 'sessions:list',
   sessionsExport: 'sessions:export',
   sessionsDelete: 'sessions:delete',
@@ -57,6 +64,7 @@ export const IPC = {
   evAnswerDelta: 'answer:delta',
   evAnswerDone: 'answer:done',
   evAnswerError: 'answer:error',
+  evSessionError: 'session:error',
   evForceAnswer: 'hotkey:force-answer',
   evTogglePause: 'hotkey:toggle-pause',
   evSettingsChanged: 'settings:changed',

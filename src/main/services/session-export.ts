@@ -16,6 +16,8 @@ export function sessionToMarkdown(events: SessionEvent[]): string {
   const lines: string[] = [];
   lines.push(`# Unseen session — ${start ? new Date(start).toLocaleString() : 'empty'}`);
   lines.push('');
+  const startEvent = events.find(e => e.type === 'start');
+  if (startEvent?.type === 'start' && startEvent.profileId) lines.push(`Class: ${startEvent.profileName ?? startEvent.profileId}`, '');
   if (start && end && end > start) {
     lines.push(`*${Math.round((end - start) / 60_000)} min · ${finals} transcript segments · ${answers} answers*`);
     lines.push('');
@@ -44,10 +46,21 @@ export function sessionToMarkdown(events: SessionEvent[]): string {
         speakerAt = ev.t;
       }
       speakerText.push(ev.text);
+    } else if (ev.type === 'speaker-label') {
+      flushSpeaker();
+      lines.push(`*${hhmm(ev.t)} — Professor label ${ev.speaker === null ? 'cleared (reassign after reconnect)' : `assigned by user to S${ev.speaker}`}.*`, '');
+    } else if (ev.type === 'question') {
+      flushSpeaker();
+      lines.push(`**Question ${ev.questionId} · ${hhmm(ev.t)}${ev.speaker !== undefined ? ` · S${ev.speaker}` : ''}:** ${ev.text}`, '');
+    } else if (ev.type === 'answer-status') {
+      flushSpeaker();
+      lines.push(`*Question ${ev.questionId}: ${ev.status} — ${ev.text}*`, '');
     } else if (ev.type === 'answer') {
       flushSpeaker();
       lines.push(`> **🤖 ${hhmm(ev.t)}** *(${ev.profileId}${ev.forced ? ', asked' : ''})*`);
       lines.push('>');
+      if (ev.expandedFrom) lines.push(`> Expanded answer to ${ev.expandedFrom}`, '>');
+      if (ev.questionId) lines.push(`> Question: ${ev.questionId}${ev.question ? ` — ${ev.question}` : ''}`, '>');
       for (const l of ev.text.split('\n')) lines.push(`> ${l}`);
       lines.push('');
     }

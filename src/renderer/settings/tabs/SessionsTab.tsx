@@ -19,6 +19,11 @@ function fmtDuration(meta: SessionMeta): string {
 export function SessionsTab({ settings, update }: TabProps): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [exported, setExported] = useState<string | null>(null);
+  const [course, setCourse] = useState(settings.activeProfile);
+  const [query, setQuery] = useState('');
+  const [hits, setHits] = useState<{ sessionId: string; t: number; type: string; text: string }[]>([]);
+  const courses = [...new Map(sessions.filter(s => s.profileId).map(s => [s.profileId!, s.profileName ?? s.profileId!])).entries()];
+  if (!courses.some(([id]) => id === settings.activeProfile)) courses.push([settings.activeProfile, settings.activeProfile]);
 
   const refresh = (): void => {
     void window.unseen.sessionsList().then(setSessions);
@@ -40,6 +45,21 @@ export function SessionsTab({ settings, update }: TabProps): React.JSX.Element {
       </div>
 
       {exported && <div className="verify ok">✓ Exported to {exported}</div>}
+      <div className="field">
+        <label>Class archive</label>
+        <select value={course} onChange={e => { setCourse(e.target.value); setHits([]); }}>
+          {courses.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          <option value="">Legacy / unclassified</option>
+        </select>
+      </div>
+      <div className="row">
+        <input aria-label="Search this class transcript" placeholder="Search saved transcript + questions + answers" value={query} onChange={e => setQuery(e.target.value)} />
+        <button className="btn secondary" onClick={() => { void window.unseen.sessionsSearch(course, query).then(setHits); }}>Search class</button>
+      </div>
+      <p style={{ fontSize: 12, color: '#888' }}>Local text archive, indexed by class and session date. Search runs only when requested; recordings are not saved.</p>
+      {hits.map((hit, i) => <div key={i} className="profile-card" style={{ display: 'block' }}>
+        <div className="desc">{fmtDate(hit.t)} · {hit.type}</div><div>{hit.text}</div>
+      </div>)}
 
       {sessions.length === 0 ? (
         <p style={{ color: '#888', fontSize: 12, marginTop: 12 }}>
@@ -47,13 +67,13 @@ export function SessionsTab({ settings, update }: TabProps): React.JSX.Element {
           automatically (when recording is on).
         </p>
       ) : (
-        sessions.map((s) => (
+        sessions.filter(s => (s.profileId ?? '') === course).map((s) => (
           <div className="profile-card" key={s.id} style={{ cursor: 'default' }}>
             <span className="icon">🗒️</span>
             <div>
-              <div className="name">{fmtDate(s.startedAt)}</div>
+              <div className="name">{s.profileName ?? s.profileId ?? 'Unclassified'} · {fmtDate(s.startedAt)}</div>
               <div className="desc">
-                {fmtDuration(s)} · {s.finals} transcript segments · {s.answers} answers
+                {fmtDuration(s)} · {s.finals} transcript segments · {s.questions ?? 0} questions · {s.answers} answers
               </div>
             </div>
             <div className="spacer" />

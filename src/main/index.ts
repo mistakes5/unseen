@@ -16,6 +16,7 @@ import { ingestNotes } from './services/notes/ingest';
 import { distillToday } from './services/memory/distill';
 import { join } from 'node:path';
 import { stopLocalTranscription } from './services/stt/whisperlivekit';
+import { cancelAnswer } from './services/llm/run-answer';
 
 // Keep this classroom fork separate from any existing Unseen installation.
 app.setName('Classroom Copilot');
@@ -128,6 +129,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', () => {
+  cancelAnswer();
   stopLocalTranscription();
   unregisterShortcuts();
   disposeProfiles();

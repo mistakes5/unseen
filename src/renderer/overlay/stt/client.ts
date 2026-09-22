@@ -1,6 +1,7 @@
 import type { SttDescriptor, TranscriptEvent } from '../../../shared/types';
 import { getParser } from './parsers';
 import { createSilentAudio } from './silent-audio';
+import { speakerTurns } from './speaker-turns';
 
 // Generic streaming STT client: mic → MediaRecorder → vendor WebSocket.
 // Provider-agnostic; vendor specifics come from the descriptor (built in main,
@@ -237,7 +238,7 @@ export class SttClient {
     ws.onmessage = (event) => {
       try {
         const parsed = parse(JSON.parse(event.data as string));
-        if (parsed) this.opts.onEvent(parsed);
+        if (parsed) for (const turn of speakerTurns(parsed)) this.opts.onEvent(turn);
       } catch (err) {
         console.error('[stt] parse error', err);
       }

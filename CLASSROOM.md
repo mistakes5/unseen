@@ -26,6 +26,26 @@ Configure providers in Settings using your own credentials. The Codex provider r
 
 Choose a profile and press Start for microphone input. Stop releases the capture session. Switching profiles stops the current session and clears its in-memory transcript and answers.
 
+## Multiple questions and professor priority
+
+Listening and question detection continue while answers generate. The controller separates transcribed question boundaries into verbatim candidates and batches independent Jev judgments. Accepted questions get stable IDs, two concurrent answer slots, and a waiting queue. Answers are routed by ID even when they finish out of order; newest question cards appear at the top. Ask now adds an answer without discarding other work. Stop, pause, and course changes cancel active/queued work with an explicit status.
+
+Enable diarization in Settings for numbered speaker labels. Within-result speaker changes are preserved. Use **Professor voice** in the overlay to assign a heard speaker; matching questions move ahead of waiting student questions, without interrupting answers already running. This is a user-assigned label, not biometric voice identification. Assignment clears on a new stream/reconnect; reassign after hearing the professor again. Speaker attribution and question detection can be wrong, and missing ASR question boundaries can still combine questions.
+
+## Expand an answer
+
+Completed answers have an **Expand** button: a 100–180-word plain-English follow-up stays beneath the original short answer. It reuses that answer's frozen course evidence and model/reasoning settings, without a new search or question-detection call. Expansion shares the two answer slots, queues behind waiting questions, and does not stop listening. Collapse/show reuses the completed text without another model call. Errors and cancellation preserve the original answer and allow retry.
+
+For the Political Identities profile, expansion can include a clearly signposted devil's-advocate perspective when it adds substance, a fair explanation of the other side, and a simple limitation or reply. The prompt avoids forced disagreement, false balance, unsupported readings, and promises about participation marks. Other profiles retain the general expansion prompt.
+
+Snapshots are memory-only and capped at the latest 100 completed answers; after restart or eviction, ask the question again. With autosave enabled, expanded responses are linked to their original question and session and included in Markdown exports.
+
+## Saved class sessions
+
+Enable **Settings → Sessions → Record sessions** to persist transcript finals, detected questions, linked answers, speaker assignments, and cancellation/error statuses. Every Start creates a distinct class/date session in the local `sessions/<profile-id>/` directory. Files are private-mode JSONL plus a metadata catalog; they are not encrypted transcripts, and audio recordings are not retained by this feature. Existing legacy session files remain readable.
+
+The Sessions tab filters by class, searches that class's saved text on demand, and exports Markdown. The search is local text matching over class-scoped records, not an embedding index or an automatic addition to the answer context. Autosave does not feed the separate personal-memory log. Changing course never puts the previous class's archive into the live answer prompt.
+
 ## Course materials and privacy
 
 The two politics profiles are configuration examples. Readings, recordings, prepared bundles, account settings, API keys, and private test reports are **not included**. Supply materials you are authorized to use, and obtain any required permission to record or send classroom discussion to cloud services.

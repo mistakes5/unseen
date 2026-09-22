@@ -16,6 +16,7 @@ import type {
   Settings,
   SttDescriptor,
   VerifyResult,
+  QuestionBatch,
 } from '../shared/types';
 
 const api = {
@@ -54,6 +55,8 @@ const api = {
   answerStart: (payload: AnswerPayload): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke(IPC.answerStart, payload),
   answerCancel: (): Promise<void> => ipcRenderer.invoke(IPC.answerCancel),
+  questionsDetect: (batch: QuestionBatch): Promise<{ id: string; probability: number }[]> => ipcRenderer.invoke(IPC.questionsDetect, batch),
+  questionsCancel: (): Promise<void> => ipcRenderer.invoke(IPC.questionsCancel),
 
   // dictation
   dictationCleanup: (rawText: string): Promise<{ ok: boolean }> =>
@@ -99,20 +102,26 @@ const api = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appInfo),
   quit: (): Promise<void> => ipcRenderer.invoke(IPC.quit),
 
-  sessionRecordFinal: (ev: { text: string; speaker: number }): void =>
+  sessionBegin: (): Promise<string> => ipcRenderer.invoke(IPC.sessionBegin),
+  sessionSpeaker: (ev: { speaker: number | null; profileId: string; sessionId: string }): void => ipcRenderer.send(IPC.sessionSpeaker, ev),
+  sessionRecordFinal: (ev: { text: string; speaker: number; profileId: string; sessionId: string }): void =>
     ipcRenderer.send(IPC.sessionFinal, ev),
+  sessionRecordQuestion: (ev: { text: string; speaker: number; profileId: string; sessionId: string; questionId: string }): void => ipcRenderer.send(IPC.sessionQuestion, ev),
+  sessionRecordStatus: (ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' }): void => ipcRenderer.send(IPC.sessionStatus, ev),
+  sessionsSearch: (profileId: string, query: string): Promise<{ sessionId: string; t: number; type: string; text: string }[]> => ipcRenderer.invoke(IPC.sessionsSearch, profileId, query),
   sessionsList: (): Promise<SessionMeta[]> => ipcRenderer.invoke(IPC.sessionsList),
   sessionsExport: (id: string): Promise<{ ok: boolean; path?: string }> =>
     ipcRenderer.invoke(IPC.sessionsExport, id),
   sessionsDelete: (id: string): Promise<void> => ipcRenderer.invoke(IPC.sessionsDelete, id),
   sessionsOpenFolder: (): Promise<void> => ipcRenderer.invoke(IPC.sessionsOpenFolder),
 
-  onAnswerDelta: (cb: (text: string) => void) =>
-    ipcRenderer.on(IPC.evAnswerDelta, (_e, t: string) => cb(t)),
+  onAnswerDelta: (cb: (event: { requestId: string; text: string }) => void) =>
+    ipcRenderer.on(IPC.evAnswerDelta, (_e, event: { requestId: string; text: string }) => cb(event)),
   onAnswerDone: (cb: (done: AnswerDone) => void) =>
     ipcRenderer.on(IPC.evAnswerDone, (_e, d: AnswerDone) => cb(d)),
-  onAnswerError: (cb: (err: string) => void) =>
-    ipcRenderer.on(IPC.evAnswerError, (_e, err: string) => cb(err)),
+  onAnswerError: (cb: (event: { requestId: string; error: string }) => void) =>
+    ipcRenderer.on(IPC.evAnswerError, (_e, event: { requestId: string; error: string }) => cb(event)),
+  onSessionError: (cb: (error: string) => void) => ipcRenderer.on(IPC.evSessionError, (_e, error: string) => cb(error)),
   onForceAnswer: (cb: () => void) => ipcRenderer.on(IPC.evForceAnswer, () => cb()),
   onTogglePause: (cb: () => void) => ipcRenderer.on(IPC.evTogglePause, () => cb()),
   onSettingsChanged: (cb: (s: Settings) => void) =>
