@@ -9,10 +9,10 @@
     "email": "noreply@github.com"
   },
   "main": "out/main/index.js",
-  "homepage": "https://github.com/repowise-dev/unseen",
+  "homepage": "https://github.com/mistakes5/unseen/tree/classroom-copilot",
   "repository": {
     "type": "git",
-    "url": "https://github.com/repowise-dev/unseen.git"
+    "url": "https://github.com/mistakes5/unseen.git"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -26,8 +26,8 @@
     "test:watch": "vitest"
   },
   "build": {
-    "appId": "dev.repowise.unseen",
-    "productName": "Unseen",
+    "appId": "local.classroom.copilot",
+    "productName": "Classroom Copilot",
     "files": [
       "out/**"
     ],
@@ -41,6 +41,9 @@
       "output": "release"
     },
     "mac": {
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Transcribe classroom discussion when you press Start."
+      },
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -61,7 +64,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "repowise-dev",
+      "owner": "mistakes5",
       "repo": "unseen"
     }
   },

@@ -4,11 +4,13 @@ import { anthropicProvider } from './anthropic';
 import { openaiProvider, openaiCompatibleProvider } from './openai-like';
 import { geminiProvider } from './gemini';
 import { ollamaProvider } from './ollama';
+import { codexProvider } from './codex';
 import { getSecret } from '../secrets';
 
 // To add an LLM vendor: implement LlmProvider in one file, add it here.
 // See docs/extending/llm-provider.md.
 const providers: LlmProvider[] = [
+  codexProvider,
   anthropicProvider,
   openaiProvider,
   geminiProvider,

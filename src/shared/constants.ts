@@ -2,8 +2,9 @@ import type { Settings } from './types';
 
 export const DEFAULT_SETTINGS: Settings = {
   llm: {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-6',
+    provider: 'codex',
+    model: 'gpt-5.6-luna',
+    reasoningEffort: 'low',
     maxTokens: 2000,
     temperature: null,
     fallbacks: [],
@@ -15,12 +16,13 @@ export const DEFAULT_SETTINGS: Settings = {
   stt: {
     provider: 'deepgram',
     language: 'en',
-    diarize: true,
+    diarize: false,
     endpointingMs: 300,
     micDeviceId: 'default',
   },
+  questionDetection: { provider: 'jev', threshold: 0.8 },
   overlay: {
-    privacyMode: true,
+    privacyMode: false,
     alwaysOnTop: true,
     opacity: 1,
     fontSize: 13,
@@ -34,7 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
     dictation: 'Control+Space',
   },
   dictation: {
-    enabled: true,
+    enabled: false,
     cleanup: true,
     model: 'claude-haiku-4-5',
     excludeApps: [],
@@ -54,11 +56,11 @@ export const DEFAULT_SETTINGS: Settings = {
     retentionMin: 3,
   },
   sessions: {
-    autoSave: true,
+    autoSave: false,
   },
-  activeProfile: 'qa-overlay',
+  activeProfile: 'political-identities',
   dataDir: '',
-  onboarded: false,
+  onboarded: true,
 };
 
 /** Max bytes of a single knowledge file injected into the prompt. */

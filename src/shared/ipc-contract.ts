@@ -19,6 +19,7 @@ export const IPC = {
   modelsList: 'models:list',
   providerVerify: 'provider:verify',
   sttDescriptor: 'stt:descriptor',
+  meetilyPoll: 'stt:meetily-poll',
   sttDescriptorDictation: 'stt:descriptor-dictation',
   answerStart: 'answer:start',
   answerCancel: 'answer:cancel',

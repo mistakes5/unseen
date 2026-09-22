@@ -8,13 +8,14 @@ import { SttClient } from './stt/client';
 import { useOverlayStore } from './store';
 
 const MIN_GAP_MS = 1500; // debounce between auto-answers (profile can raise)
-const INFLIGHT_TIMEOUT_MS = 30_000; // reset a stuck in-flight answer
+const INFLIGHT_TIMEOUT_MS = 60_000; // allow Jev + Codex's 45s watchdog to finish
 
 const transcript = new TranscriptStore();
 let client: SttClient | null = null;
 // The meeting overlay is on-demand: it does NOT listen until the user starts a
 // session (no mic capture, no STT connection, no "reconnecting" churn at idle).
 let listening = false;
+let listeningLabel = 'listening';
 
 let inFlight = false;
 let inFlightSince = 0;
@@ -22,6 +23,7 @@ let lastQueryAt = 0;
 let pendingRetry = false;
 let answerSeq = 0;
 let currentAnswerId: number | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function store() {
   return useOverlayStore.getState();
@@ -33,6 +35,7 @@ function pushTranscript(): void {
 
 async function maybeAnswer(opts: { force?: boolean; codeMode?: boolean } = {}): Promise<void> {
   const { force = false, codeMode = false } = opts;
+  if (!listening || client?.paused) return;
   const profile = store().activeProfile;
   if (!profile) return;
 
@@ -57,11 +60,20 @@ async function maybeAnswer(opts: { force?: boolean; codeMode?: boolean } = {}): 
 
   const now = Date.now();
   const debounce = Math.max(MIN_GAP_MS, profile.triggers.debounce_ms);
-  if (!force && now - lastQueryAt < debounce) return;
+  if (!force && now - lastQueryAt < debounce) {
+    if (!retryTimer) retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void maybeAnswer();
+    }, debounce - (now - lastQueryAt));
+    return;
+  }
 
   let effectiveCodeMode = codeMode;
   if (!force) {
-    const result = evaluateTriggers(profile.triggers, {
+    if (!profile.triggers.auto || transcript.newText().length < profile.triggers.min_chars) return;
+    const result = store().settings?.questionDetection.provider === 'jev'
+      ? { fire: true, codeMode: false }
+      : evaluateTriggers(profile.triggers, {
       newText: transcript.newText(),
       recentText: transcript.recentText(),
     });
@@ -71,7 +83,7 @@ async function maybeAnswer(opts: { force?: boolean; codeMode?: boolean } = {}): 
 
   const fullTranscript = transcript.fullTranscript();
   if (!fullTranscript || fullTranscript.length < 15) return;
-  const newSegment = transcript.newSegment();
+  const newSegment = transcript.newSegment(force ? 2 : 0);
 
   // Advance the pointer NOW so repeated Ask Now clicks don't resend the window.
   transcript.markAnswered();
@@ -106,7 +118,7 @@ async function maybeAnswer(opts: { force?: boolean; codeMode?: boolean } = {}): 
 function settleAnswer(opts: { error?: string; usage?: Usage | null }): void {
   inFlight = false;
   const paused = client?.paused ?? false;
-  store().setStatus(paused ? 'paused' : 'live', paused ? 'paused' : 'listening');
+  store().setStatus(!listening ? 'idle' : paused ? 'paused' : 'live', !listening ? 'stopped' : paused ? 'paused' : listeningLabel);
 
   if (currentAnswerId !== null) {
     const item = store().answers.find((a) => a.id === currentAnswerId);
@@ -133,11 +145,37 @@ export function askNow(): void {
 export function togglePause(): boolean {
   // Pause only makes sense while a session is running.
   if (!listening) return false;
-  return client?.togglePause() ?? false;
+  const paused = client?.togglePause() ?? false;
+  if (paused) {
+    void window.unseen.answerCancel();
+    if (currentAnswerId !== null) store().finishAnswer(currentAnswerId, { discard: true });
+    currentAnswerId = null;
+    inFlight = false;
+    pendingRetry = false;
+  }
+  return paused;
 }
 
 export function isListening(): boolean {
   return listening;
+}
+
+/** A new course starts stopped with no previous room transcript or answer feed. */
+export function resetClassroomSession(): void {
+  if (listening) toggleListening();
+  else void window.unseen.answerCancel();
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  pendingRetry = false;
+  inFlight = false;
+  currentAnswerId = null;
+  lastQueryAt = 0;
+  transcript.finals = [];
+  transcript.interim = '';
+  transcript.answeredUpTo = 0;
+  useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0 });
+  pushTranscript();
+  store().setStatus('idle', 'course changed — press Start');
 }
 
 /** Start / stop a listening session. Returns the new listening state. */
@@ -145,6 +183,13 @@ export function toggleListening(): boolean {
   if (listening) {
     listening = false;
     client?.stop();
+    void window.unseen.answerCancel();
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    pendingRetry = false;
+    if (currentAnswerId !== null) store().finishAnswer(currentAnswerId, { discard: true });
+    currentAnswerId = null;
+    inFlight = false;
     store().setStatus('idle', 'stopped');
   } else {
     listening = true;
@@ -170,7 +215,12 @@ export async function initController(): Promise<void> {
   });
 
   let lastSttConfig = JSON.stringify(settings.stt);
+  let lastProfileId = active.id;
   window.unseen.onSettingsChanged(async (next) => {
+    if (next.activeProfile !== lastProfileId) {
+      lastProfileId = next.activeProfile;
+      resetClassroomSession();
+    }
     store().setSettings(next);
     const profile = await window.unseen.profilesGetActive();
     store().setActiveProfile(profile);
@@ -202,15 +252,38 @@ export async function initController(): Promise<void> {
   });
 
   client = new SttClient({
+    onReset: () => {
+      void window.unseen.answerCancel();
+      if (currentAnswerId !== null) store().finishAnswer(currentAnswerId, { discard: true });
+      currentAnswerId = null;
+      inFlight = false;
+      pendingRetry = false;
+      transcript.finals = [];
+      transcript.interim = '';
+      transcript.answeredUpTo = 0;
+      pushTranscript();
+    },
     getDescriptor: () => window.unseen.sttDescriptor(),
     getMicDeviceId: () => store().settings?.stt.micDeviceId ?? 'default',
     onStatus: (status) => {
       switch (status.state) {
+        case 'complete':
+          listening = false;
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = null;
+          pendingRetry = false;
+          store().setStatus('idle', status.message);
+          break;
+        case 'following':
+          listeningLabel = status.message;
+          if (!inFlight) store().setStatus('live', status.message);
+          break;
         case 'connecting':
           store().setStatus('idle', 'connecting…');
           break;
         case 'live':
-          store().setStatus('live', 'listening');
+          listeningLabel = `listening — ${store().settings?.stt.provider ?? 'standalone'}`;
+          store().setStatus('live', listeningLabel);
           break;
         case 'paused':
           store().setStatus('paused', 'paused');

@@ -9,6 +9,8 @@ import { buildAnswerRequest } from '../prompt-builder';
 import { getLlmProvider, providerContext } from './registry';
 import { estimateCost } from './prices';
 import { recordEvent } from '../sessions';
+import { getSecret } from '../secrets';
+import { detectQuestion } from '../question-detection';
 
 // One answer in flight at a time: starting a new one aborts the previous.
 let current: AbortController | null = null;
@@ -34,16 +36,37 @@ function friendlyError(err: unknown, providerId: string): string {
 }
 
 export async function runAnswer(sender: WebContents, payload: AnswerPayload): Promise<void> {
+  const diagnostic = process.argv.includes('--overlay-replay-file');
+  const began = Date.now();
   cancelAnswer();
   const controller = new AbortController();
   current = controller;
 
   const cfg = settings().get();
+  if (!payload.forced && cfg.questionDetection.provider === 'jev') {
+    try {
+      const key = getSecret('typesafe');
+      if (!key) throw new Error('Add your TypeSafe key in Settings → Providers to enable Jev, or select basic question detection. Ask now bypasses Jev.');
+      const probability = await detectQuestion(payload, key, controller.signal);
+      if (diagnostic) console.info('[overlay-replay] Jev', JSON.stringify({ probability, elapsedMs: Date.now() - began, forced: payload.forced }));
+      if (controller.signal.aborted) return;
+      if (probability < cfg.questionDetection.threshold) {
+        sender.send(IPC.evAnswerDelta, 'SKIP');
+        sender.send(IPC.evAnswerDone, { usage: null });
+        if (current === controller) current = null;
+        return;
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) sender.send(IPC.evAnswerError, String((error as Error).message));
+      if (current === controller) current = null;
+      return;
+    }
+  }
   const profile = getActiveProfile();
   const namespaces = profile.memory?.namespaces ?? [];
   const request: LlmRequest = buildAnswerRequest({
     profile,
-    knowledge: loadKnowledge(profile),
+    knowledge: loadKnowledge(profile, payload.newSegment, payload.fullTranscript.slice(-1000)),
     memory: [...loadMemoryFacts(namespaces), ...loadWatchedMarkdown(namespaces)],
     settings: cfg,
     ...payload,
@@ -61,7 +84,7 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
     // Stall watchdog: abort if the stream goes silent.
     let lastEventAt = Date.now();
     const watchdog = setInterval(() => {
-      if (Date.now() - lastEventAt > LLM_STALL_TIMEOUT_MS) controller.abort();
+      if (Date.now() - lastEventAt > (providerId === 'codex' ? 45_000 : LLM_STALL_TIMEOUT_MS)) controller.abort();
     }, 3000);
 
     try {
@@ -83,7 +106,7 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
             inputTokens: event.inputTokens,
             outputTokens: event.outputTokens,
             cacheReadTokens: event.cacheReadTokens,
-            estimatedCost: estimateCost(
+            estimatedCost: providerId === 'codex' ? null : estimateCost(
               req.model,
               event.inputTokens,
               event.outputTokens,
@@ -93,6 +116,7 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
         }
       }
       sender.send(IPC.evAnswerDone, { usage });
+      if (diagnostic) console.info('[overlay-replay] Answer sent to real renderer', JSON.stringify({ elapsedMs: Date.now() - began, chars: answerText.length, skipped: answerText.trim() === 'SKIP' }));
       if (answerText.trim() && answerText.trim().toUpperCase() !== 'SKIP') {
         recordEvent({
           t: Date.now(),
@@ -105,7 +129,10 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
       }
       return;
     } catch (err) {
-      if (controller.signal.aborted && !firstDeltaSent) return; // superseded or cancelled
+      if (controller.signal.aborted) {
+        if (current === controller) sender.send(IPC.evAnswerError, 'Answer timed out. Try Ask now.');
+        return;
+      }
       lastError = friendlyError(err, providerId);
       console.error('[llm]', lastError);
       if (firstDeltaSent) {

@@ -85,6 +85,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
       {llmProvider?.needsApiKey && (
         <KeyField providerId={llmId} hasKey={!!keyStatus[llmId]} onSaved={setKeyStatus} />
       )}
+      {llmId === 'codex' && <div className="hint">Uses your existing Codex CLI login and account limits; no separate OpenAI API key. GPT-5.6 Luna uses low reasoning + Fast mode (increased credit usage). Answers appear when each CLI message completes. Test connection checks login, not remaining quota.</div>}
 
       {llmId === 'ollama' && (
         <div className="field">
@@ -154,6 +155,16 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
         )}
       </div>
 
+      <h3>Question detection</h3>
+      <div className="field">
+        <label>Automatic detection</label>
+        <select value={settings.questionDetection.provider} onChange={(e) => set({ questionDetection: { provider: e.target.value as 'rules' | 'jev' } })}>
+          <option value="jev">Jev · TypeSafe API</option>
+          <option value="rules">Basic local rules · no detection fee</option>
+        </select>
+        <div className="hint">Jev receives recent transcript text. Ask now bypasses detection. Basic rules can misidentify questions.</div>
+      </div>
+      {settings.questionDetection.provider === 'jev' && <KeyField providerId="typesafe" hasKey={!!keyStatus.typesafe} onSaved={setKeyStatus} />}
       <h3>Transcription (STT)</h3>
       <div className="field">
         <label>Provider</label>
@@ -168,11 +179,18 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
           ))}
         </select>
       </div>
-      <KeyField
+      {providers.stt.find((p) => p.id === settings.stt.provider)?.needsApiKey && <KeyField
         providerId={settings.stt.provider}
         hasKey={!!keyStatus[settings.stt.provider]}
         onSaved={setKeyStatus}
-      />
+      />}
+      <div className="hint">
+        {settings.stt.provider === 'meetily'
+          ? 'Reads only new transcript segments from Meetily. Start recording there first, then Start here. No second microphone, audio stream, or Whisper model. Pausing/stopping this overlay does not stop Meetily.'
+          : settings.stt.provider === 'whisperlivekit'
+          ? 'Your cached MLX Turbo model runs on this Mac. Test connection starts the local server. Speaker identification is unavailable in this configuration.'
+          : 'Audio streams to Deepgram. Its trial credit is finite; usage fees apply after credit runs out.'}
+      </div>
       <div className="field">
         <button
           className="btn"
@@ -184,7 +202,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
         </button>
         {sttVerify && (
           <div className={`verify ${sttVerify.ok ? 'ok' : 'bad'}`}>
-            {sttVerify.ok ? '✓ Connected' : `✗ ${sttVerify.message}`}
+            {sttVerify.ok ? `✓ Connected${sttVerify.message ? ` — ${sttVerify.message}` : ''}` : `✗ ${sttVerify.message}`}
           </div>
         )}
       </div>

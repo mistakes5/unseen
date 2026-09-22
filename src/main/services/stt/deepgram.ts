@@ -12,6 +12,7 @@ export const deepgramProvider: SttProvider = {
     if (!key) throw new Error('No Deepgram API key — set one in Settings → Providers.');
     const params = new URLSearchParams({
       model: 'nova-3',
+      mip_opt_out: 'true',
       smart_format: 'true',
       interim_results: 'true',
       punctuate: 'true',
@@ -37,6 +38,7 @@ export const deepgramProvider: SttProvider = {
     try {
       const res = await fetch('https://api.deepgram.com/v1/auth/token', {
         headers: { Authorization: `Token ${key}` },
+        signal: AbortSignal.timeout(8000),
       });
       if (res.status === 401) return { ok: false, message: 'Invalid API key.' };
       if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };

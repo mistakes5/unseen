@@ -8,6 +8,17 @@ release/
 *.local
 .DS_Store
 coverage/
+reports/
 
 # local working docs, not part of the OSS repo
 PLAN.md
+CLASSROOM-SETUP.md
+scripts/summarize-replay.ts
+
+# Private classroom inputs and prepared evidence
+*.context.json
+*.index.json
+*.m4a
+*.wav
+*.mp3
+*.webm

@@ -38,15 +38,16 @@ describe('buildAnswerRequest', () => {
     expect(req.system).toHaveLength(1);
   });
 
-  it('includes knowledge blocks as cacheable system blocks', () => {
+  it('keeps reference evidence in user data, not trusted instructions', () => {
     const req = buildAnswerRequest({
       ...baseOpts,
       knowledge: [{ name: 'guide.md', text: 'the answer is 42' }],
     });
     expect(req.system[0].text).toContain('Use the docs.');
-    expect(req.system).toHaveLength(2);
-    expect(req.system[1].text).toContain('DOCS — guide.md:');
-    expect(req.system[1].cacheable).toBe(true);
+    expect(req.system).toHaveLength(1);
+    expect(req.messages[0].content).toContain('guide.md');
+    expect(req.messages[0].content).toContain('the answer is 42');
+    expect(req.system[0].text).not.toContain('the answer is 42');
   });
 
   it('puts transcript and segment in the user message, not the system prompt', () => {

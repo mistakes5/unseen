@@ -7,6 +7,7 @@ import type {
   DeepPartial,
   DistillResult,
   ModelInfo,
+  MeetilyPoll,
   Namespace,
   Profile,
   ProfileSummary,
@@ -46,6 +47,7 @@ const api = {
     ipcRenderer.invoke(IPC.providerVerify, kind, providerId),
 
   sttDescriptor: (): Promise<SttDescriptor> => ipcRenderer.invoke(IPC.sttDescriptor),
+  meetilyPoll: (reset = false): Promise<MeetilyPoll> => ipcRenderer.invoke(IPC.meetilyPoll, reset),
   sttDescriptorDictation: (): Promise<SttDescriptor> =>
     ipcRenderer.invoke(IPC.sttDescriptorDictation),
 

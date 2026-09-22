@@ -11,6 +11,7 @@ const ENV_FALLBACK: Record<string, string> = {
   openai: 'OPENAI_API_KEY',
   gemini: 'GEMINI_API_KEY',
   deepgram: 'DEEPGRAM_API_KEY',
+  typesafe: 'TYPESAFE_API_KEY',
   'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
 };
 

@@ -9,6 +9,7 @@ export type SttParser = (raw: unknown) => TranscriptEvent | null;
 
 const parsers: Record<string, SttParser> = {
   deepgram: parseDeepgram,
+  whisperlivekit: parseDeepgram,
 };
 
 export function getParser(providerId: string): SttParser {

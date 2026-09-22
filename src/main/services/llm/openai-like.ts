@@ -55,7 +55,9 @@ export function makeOpenAiLike(opts: {
         {
           model: req.model,
           stream: true,
-          temperature: req.temperature,
+          ...(opts.strictOpenAi && /^gpt-5/.test(req.model)
+            ? { reasoning_effort: req.reasoningEffort ?? 'low' }
+            : { temperature: req.temperature }),
           ...(opts.strictOpenAi ? { stream_options: { include_usage: true } } : {}),
           ...tokenParam,
           messages: [{ role: 'system' as const, content: joinSystem(req) }, ...req.messages],
@@ -85,6 +87,7 @@ export const openaiProvider = makeOpenAiLike({
   needsApiKey: true,
   strictOpenAi: true,
   staticModels: [
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
     { id: 'gpt-5.4', label: 'GPT-5.4' },
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini (fast/cheap)' },
     { id: 'gpt-5-mini', label: 'GPT-5 mini (fast/cheap)' },

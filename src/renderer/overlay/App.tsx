@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useOverlayStore } from './store';
 import { askNow, togglePause, toggleListening, isListening } from './controller';
 import { Transcript } from './components/Transcript';
@@ -14,6 +14,12 @@ export function App(): React.JSX.Element {
   const setActiveProfile = useOverlayStore((s) => s.setActiveProfile);
   const [listening, setListening] = useState(isListening());
   const [paused, setPaused] = useState(false);
+  // Capture can also finish itself (finite replay), not only via this button.
+  useEffect(() => {
+    const active = isListening();
+    setListening(active);
+    if (!active) setPaused(false);
+  }, [status]);
 
   const privacyOn = settings?.overlay.privacyMode ?? true;
   const fontSize = settings?.overlay.fontSize ?? 13;

@@ -15,6 +15,7 @@ export interface Settings {
     model: string;
     maxTokens: number;
     temperature: number | null;
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
     /** Provider ids tried in order if the primary fails before first token. */
     fallbacks: string[];
     endpoints: {
@@ -29,6 +30,7 @@ export interface Settings {
     endpointingMs: number;
     micDeviceId: string;
   };
+  questionDetection: { provider: 'rules' | 'jev'; threshold: number };
   overlay: {
     privacyMode: boolean;
     alwaysOnTop: boolean;
@@ -111,6 +113,7 @@ export interface LlmRequest {
   model: string;
   maxTokens: number;
   temperature?: number;
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
 
 export type LlmEvent =
@@ -146,9 +149,17 @@ export interface VerifyResult {
 
 export interface SttDescriptor {
   providerId: string;
+  input?: 'microphone' | 'meetily' | 'file-replay';
+  replay?: { wavBase64: string; label: string };
   wsUrl: string;
   protocols?: string[];
   keepAlive?: { intervalMs: number; payload: string };
+}
+
+export interface MeetilyPoll {
+  events: TranscriptEvent[];
+  reset: boolean;
+  state: 'following' | 'waiting';
 }
 
 export interface WordTiming {

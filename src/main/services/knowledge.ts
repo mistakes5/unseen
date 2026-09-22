@@ -6,6 +6,8 @@ import { KNOWLEDGE_FILE_MAX_BYTES } from '../../shared/constants';
 import { factsDir } from './paths';
 import { renderFactsBlock, type Fact } from './memory/core';
 import { settings } from './settings';
+import { retrieveCourse, type CourseIndex } from './course-retrieval';
+import { loadPreparedContext } from './prepared-context';
 
 export interface KnowledgeFile {
   name: string;
@@ -116,12 +118,21 @@ export function loadWatchedMarkdown(namespaces: Namespace[]): KnowledgeFile[] {
   return out;
 }
 
-export function loadKnowledge(profile: Profile): KnowledgeFile[] {
+export function loadKnowledge(profile: Profile, query = '', context = ''): KnowledgeFile[] {
   const out: KnowledgeFile[] = [];
   for (const ref of profile.knowledge.files) {
     const path = isAbsolute(ref) ? ref : join(knowledgeDir(), ref);
+    if (ref.endsWith('.context.json')) {
+      out.push(...loadPreparedContext(path, profile.id));
+      continue;
+    }
     try {
       const size = statSync(path).size;
+      if (ref.endsWith('.index.json')) {
+        if (size > 10_000_000) throw new Error('Course index exceeds local size limit');
+        out.push(...retrieveCourse(JSON.parse(readFileSync(path, 'utf8')) as CourseIndex, query, 14000, context));
+        continue;
+      }
       if (size > KNOWLEDGE_FILE_MAX_BYTES) {
         console.warn(`[knowledge] ${ref} is ${size}B, truncating to ${KNOWLEDGE_FILE_MAX_BYTES}B`);
       }

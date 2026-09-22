@@ -9,6 +9,7 @@ interface Price {
 }
 
 const PRICES: Record<string, Price> = {
+  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3 },
   'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1 },
   'gemini-2.5-flash': { input: 0.3, output: 2.5 },

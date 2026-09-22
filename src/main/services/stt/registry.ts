@@ -1,11 +1,13 @@
 import type { ProviderInfo } from '../../../shared/types';
 import type { SttProvider } from './provider';
 import { deepgramProvider } from './deepgram';
+import { whisperLiveKitProvider } from './whisperlivekit';
+import { meetilyProvider } from './meetily';
 
 // To add an STT vendor: implement SttProvider here (main half) plus a message
 // parser in src/renderer/overlay/stt/parsers/ (renderer half), and register
 // both. See docs/extending/stt-provider.md.
-const providers: SttProvider[] = [deepgramProvider];
+const providers: SttProvider[] = [meetilyProvider, whisperLiveKitProvider, deepgramProvider];
 
 export function getSttProvider(id: string): SttProvider {
   const p = providers.find((p) => p.id === id);

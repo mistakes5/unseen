@@ -10,6 +10,6 @@ export interface SttProvider {
   readonly id: string;
   readonly displayName: string;
   readonly needsApiKey: boolean;
-  descriptor(settings: Settings): SttDescriptor;
+  descriptor(settings: Settings): SttDescriptor | Promise<SttDescriptor>;
   verify(settings: Settings): Promise<VerifyResult>;
 }

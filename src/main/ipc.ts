@@ -39,10 +39,16 @@ import {
   uninstallLaunchAgent,
 } from './launch-agent';
 import type { Namespace } from '../shared/types';
+import { meetilyReader } from './services/stt/meetily';
+import { stopLocalTranscription } from './services/stt/whisperlivekit';
+import { withOverlayReplay } from './services/overlay-replay';
 
 export function registerIpc(): void {
   ipcMain.handle(IPC.settingsGet, () => settings().get());
-  ipcMain.handle(IPC.settingsSet, (_e, patch: DeepPartial<Settings>) => settings().set(patch));
+  ipcMain.handle(IPC.settingsSet, (_e, patch: DeepPartial<Settings>) => {
+    if (patch.stt?.provider === 'meetily') stopLocalTranscription();
+    return settings().set(patch);
+  });
 
   ipcMain.handle(IPC.secretsSet, (_e, id: string, value: string) => {
     setSecret(id, value);
@@ -78,15 +84,20 @@ export function registerIpc(): void {
     return getLlmProvider(providerId).verify(providerContext(providerId, cfg));
   });
 
-  ipcMain.handle(IPC.sttDescriptor, () => {
+  ipcMain.handle(IPC.sttDescriptor, async () => {
     const cfg = settings().get();
-    return getSttProvider(cfg.stt.provider).descriptor(cfg);
+    return withOverlayReplay(await getSttProvider(cfg.stt.provider).descriptor(cfg));
+  });
+  ipcMain.handle(IPC.meetilyPoll, (_event, reset: boolean) => {
+    if (settings().get().stt.provider !== 'meetily') throw new Error('Meetily transcript mode is not selected');
+    return meetilyReader.poll(reset === true);
   });
 
   // Dictation STT: single speaker (no diarization) + snappier endpointing so
   // finals land fast after the user stops talking.
   ipcMain.handle(IPC.sttDescriptorDictation, () => {
     const cfg = settings().get();
+    if (cfg.stt.provider === 'meetily') throw new Error('Meetily shared transcripts are for the classroom overlay, not dictation.');
     return getSttProvider(cfg.stt.provider).descriptor({
       ...cfg,
       stt: { ...cfg.stt, diarize: false, endpointingMs: Math.min(cfg.stt.endpointingMs, 150) },
@@ -191,7 +202,7 @@ export function registerIpc(): void {
   ipcMain.on(IPC.sessionFinal, (_e, ev: { text: string; speaker: number }) => {
     recordEvent({ t: Date.now(), type: 'final', text: ev.text, speaker: ev.speaker });
     // Meeting transcript also feeds the daily memory log (Phase 2).
-    if (ev.text.trim()) {
+    if (settings().get().sessions.autoSave && ev.text.trim()) {
       appendLogEvent({ t: Date.now(), kind: 'meeting', ns: 'personal', text: ev.text.trim() });
     }
   });
