@@ -10,6 +10,7 @@ export interface AnswerItem {
   error?: string;
   question?: string;
   contextHint?: string;
+  refinement?: 'queued' | 'answering' | 'done' | 'error';
   speaker?: number;
   phase?: 'queued' | 'answering' | 'done' | 'cancelled' | 'skipped' | 'error';
   expansion?: { text: string; phase: 'queued' | 'answering' | 'done' | 'error'; error?: string; visible: boolean };
@@ -48,6 +49,7 @@ interface OverlayState {
   appendAnswer(id: string | number, delta: string): void;
   finishAnswer(id: string | number, opts: { discard?: boolean; error?: string; usage?: Usage | null }): void;
   patchExpansion(id: string | number, patch: Partial<NonNullable<AnswerItem['expansion']>>): void;
+  patchRefinement(id: string, phase: NonNullable<AnswerItem['refinement']>, text?: string): void;
   expansionUsage(usage?: Usage | null): void;
   setSettings(s: Settings): void;
   setProfiles(p: ProfileSummary[]): void;
@@ -97,6 +99,8 @@ export const useOverlayStore = create<OverlayState>((set) => ({
   setAnswerPhase: (id, phase) => set(s => ({ answers: s.answers.map(a => a.id === id ? { ...a, phase } : a) })),
   patchExpansion: (id, patch) => set(s => ({ answers: s.answers.map(a => a.id === id
     ? { ...a, expansion: { text: '', phase: 'queued', visible: true, ...a.expansion, ...patch } } : a) })),
+  patchRefinement: (id, refinement, text) => set(s => ({ answers: s.answers.map(a => a.id === id
+    ? { ...a, refinement, ...(text !== undefined ? { text, expansion: undefined } : {}) } : a) })),
   expansionUsage: usage => set(s => ({ usage: usage ?? s.usage, sessionCost: s.sessionCost + (usage?.estimatedCost ?? 0) })),
   appendAnswer: (id, delta) =>
     set((s) => ({

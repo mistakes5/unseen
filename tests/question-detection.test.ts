@@ -9,6 +9,59 @@ const payload: AnswerPayload = {
 };
 
 describe('Jev question detection contract', () => {
+  it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of-ai'])('adds isolated per-candidate focus for %s without extra model calls', async profileId => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      candidate_0: { type: 'noul', noul: 0.9 }, candidate_1: { type: 'noul', noul: 0.1 },
+    } })));
+    await detectQuestions({ profileId, candidates: [
+      { id: 'a', text: 'Why?', speaker: 0, context: 'Do not use the merged later answer', priorContext: 'x'.repeat(8000), followingContext: 'About that example.' },
+      { id: 'b', text: 'Okay.', speaker: 0, context: 'Merged later speech', priorContext: '' },
+    ] }, 'test-key', new AbortController().signal, fetcher);
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.state.courseGuidance).toBeTruthy();
+    expect(body.state.focus[0].recent).toHaveLength(1200);
+    expect(body.state.focus[0].selected).toBe('Why?');
+    expect(body.state.focus[0].continuation).toBe('About that example.');
+    expect(body.state.focus[1].recent).toBe('');
+    expect(body.questions.candidate_0.instructions).toContain('focus[0]');
+    expect(body.questions.candidate_1.instructions).toContain('focus[1]');
+    expect(body.questions.candidate_1.instructions).toContain('survey items');
+    expect(Object.keys(body.questions)).toEqual(['candidate_0', 'candidate_1']);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('does not infer a course for unrelated or prototype-key profile IDs', async () => {
+    for (const profileId of ['lecture-companion', 'toString', '__proto__']) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: { needs_response: { type: 'noul', noul: 0.5 } } })));
+      await detectQuestion({ ...payload, profileId }, 'test-key', new AbortController().signal, fetcher);
+      const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+      expect(body.state).not.toHaveProperty('courseGuidance');
+      expect(body.state).not.toHaveProperty('focus');
+      expect(body.questions.needs_response.instructions).not.toContain('courseGuidance');
+    }
+  });
+
+  it('also supplies course context through the legacy single-question path', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: { needs_response: { type: 'noul', noul: 0.9 } } })));
+    await detectQuestion({ ...payload, profileId: 'federalism' }, 'test-key', new AbortController().signal, fetcher);
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.state.courseGuidance).toContain('Federalism');
+    expect(body.state.focus.selected).toBe(payload.newSegment);
+  });
+
+  it('judges a late clarification independently in the same request without replacing normal detections', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      candidate_0: { type: 'noul', noul: 0.3 }, clarifies_recent: { type: 'noul', noul: 0.94 },
+    } })));
+    const result = await detectQuestions({ profileId: 'course', candidates: [
+      { id: 'q2', text: 'For the chart.', speaker: 0, context: '' },
+    ], recentQuestion: { id: 'q1', text: 'What attributes?', context: 'Postmodernism rejects grand narratives.', followingSpeech: 'Give a term for the chart.' } }, 'test-key', new AbortController().signal, fetcher);
+    expect(result).toEqual([{ id: 'q2', probability: 0.3 }, { id: 'q1', probability: 0.94, kind: 'clarification' }]);
+    expect(fetcher).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.state.recentQuestion.followingSpeech).toBe('Give a term for the chart.');
+    expect(body.questions.clarifies_recent.criteria.false).toContain('student answer');
+  });
   it('sends bounded transcript state and reads the documented Noul probability', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: { needs_response: { type: 'noul', noul: 0.91 } } })));
     expect(await detectQuestion(payload, 'test-key', new AbortController().signal, fetcher)).toBe(0.91);

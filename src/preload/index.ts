@@ -17,6 +17,7 @@ import type {
   SttDescriptor,
   VerifyResult,
   QuestionBatch,
+  QuestionJudgment,
 } from '../shared/types';
 
 const api = {
@@ -55,7 +56,7 @@ const api = {
   answerStart: (payload: AnswerPayload): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke(IPC.answerStart, payload),
   answerCancel: (): Promise<void> => ipcRenderer.invoke(IPC.answerCancel),
-  questionsDetect: (batch: QuestionBatch): Promise<{ id: string; probability: number }[]> => ipcRenderer.invoke(IPC.questionsDetect, batch),
+  questionsDetect: (batch: QuestionBatch): Promise<QuestionJudgment[]> => ipcRenderer.invoke(IPC.questionsDetect, batch),
   questionsCancel: (): Promise<void> => ipcRenderer.invoke(IPC.questionsCancel),
 
   // dictation

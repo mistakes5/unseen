@@ -179,6 +179,9 @@ export type TranscriptEvent =
 export interface AnswerPayload {
   /** Expand a completed answer using its main-process context snapshot. */
   expandAnswerId?: string;
+  /** One bounded short-answer revision using later clarifying speech. */
+  refineAnswerId?: string;
+  clarification?: string;
   requestId?: string;
   profileId?: string;
   sessionId?: string;
@@ -213,6 +216,13 @@ export interface QuestionBatch {
   profileId: string;
   sessionId?: string;
   candidates: QuestionCandidate[];
+  recentQuestion?: { id: string; text: string; context: string; followingSpeech: string };
+}
+
+export interface QuestionJudgment {
+  id: string;
+  probability: number;
+  kind?: 'clarification';
 }
 
 // ---- Profiles (validated shape; schema lives in profile-schema.ts) ----
@@ -292,6 +302,9 @@ export type SessionEvent =
       questionId?: string;
       question?: string;
       expandedFrom?: string;
+      refinedFrom?: string;
+      /** Local wall-clock metrics; no additional model or analytics request. */
+      timing?: { provider: string; prepareMs: number; firstTextMs: number | null; completeMs: number };
     };
 
 export interface SessionMeta {

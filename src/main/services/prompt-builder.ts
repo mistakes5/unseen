@@ -3,6 +3,7 @@
 
 import type { LlmRequest, Profile, Settings, SystemBlock } from '../../shared/types';
 import { renderTemplate } from '../../shared/template';
+import { CLASSROOM_ANSWER_STYLE } from '../../shared/classroom-context';
 
 export interface KnowledgeInput {
   name: string;
@@ -61,7 +62,8 @@ export function buildAnswerRequest(opts: BuildAnswerOpts): LlmRequest {
   // a stable prefix; the moving transcript goes in the user message instead.
   const system: SystemBlock[] = [
     {
-      text: renderedSystem + STYLE_SUFFIX[profile.prompt.response_style] + languageLine,
+      text: renderedSystem + STYLE_SUFFIX[profile.prompt.response_style]
+        + (['political-identities', 'canadian-politics'].includes(profile.id) && !opts.codeMode ? CLASSROOM_ANSWER_STYLE : '') + languageLine,
       cacheable: true,
     },
   ];

@@ -12,7 +12,7 @@ import { estimateCost } from './prices';
 import { recordEvent } from '../sessions';
 import { getSecret } from '../secrets';
 import { detectQuestion } from '../question-detection';
-import { AnswerSnapshots, buildExpansionRequest } from '../answer-expansion';
+import { AnswerSnapshots, buildExpansionRequest, buildRefinementRequest } from '../answer-expansion';
 
 const active = new Map<string, AbortController>();
 const snapshots = new AnswerSnapshots();
@@ -31,6 +31,7 @@ function friendlyError(err: unknown, providerId: string): string {
 }
 
 export async function runAnswer(sender: WebContents, payload: AnswerPayload): Promise<void> {
+  const requestStartedAt = performance.now();
   const id = payload.requestId ?? randomUUID();
   const controller = new AbortController();
   const emit = (channel: string, value: unknown): void => {
@@ -49,7 +50,9 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
     const cfg = settings().get();
     const profile = getActiveProfile(); // freeze course before asynchronous work
     if (payload.profileId && payload.profileId !== profile.id) throw new Error('Class changed; question cancelled.');
-    const original = payload.expandAnswerId ? snapshots.get(payload.expandAnswerId, sender.id, profile.id) : null;
+    if (payload.expandAnswerId && payload.refineAnswerId) throw new Error('Choose expansion or refinement, not both.');
+    const parentId = payload.expandAnswerId ?? payload.refineAnswerId;
+    const original = parentId ? snapshots.get(parentId, sender.id, profile.id) : null;
     const source = original?.payload ?? payload;
     if (!original && !payload.forced && !payload.detected && cfg.questionDetection.provider === 'jev') {
       const key = getSecret('typesafe');
@@ -61,7 +64,9 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
       }
     }
     const namespaces = profile.memory?.namespaces ?? [];
-    const request: LlmRequest = original ? buildExpansionRequest(original.request, original.answer, profile.id) : buildAnswerRequest({ profile,
+    const request: LlmRequest = original ? payload.refineAnswerId
+      ? buildRefinementRequest(original.request, original.answer, payload.clarification ?? '')
+      : buildExpansionRequest(original.request, original.answer, profile.id) : buildAnswerRequest({ profile,
       knowledge: loadKnowledge(profile, payload.newSegment, payload.fullTranscript.slice(-1000)),
       memory: [...loadMemoryFacts(namespaces), ...loadWatchedMarkdown(namespaces)], settings: cfg, ...payload });
     const chain = [cfg.llm.provider, ...cfg.llm.fallbacks.filter(f => f !== cfg.llm.provider)];
@@ -69,6 +74,8 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
     for (const providerId of chain) {
       if (controller.signal.aborted) return;
       let firstDeltaSent = false, answerText = '', timedOut = false;
+      const providerStartedAt = performance.now();
+      let firstTextMs: number | null = null;
       let usage: Usage | null = null;
       let lastEventAt = Date.now();
       const watchdog = setInterval(() => {
@@ -84,7 +91,10 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
         for await (const event of provider.stream(req, ctx)) {
           if (controller.signal.aborted) return;
           lastEventAt = Date.now();
-          if (event.type === 'delta') { firstDeltaSent = true; answerText += event.text; emit(IPC.evAnswerDelta, event.text); }
+          if (event.type === 'delta') {
+            if (event.text) firstTextMs ??= Math.round(performance.now() - providerStartedAt);
+            firstDeltaSent = true; answerText += event.text; emit(IPC.evAnswerDelta, event.text);
+          }
           else if (event.type === 'usage') usage = {
             inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens,
             estimatedCost: providerId === 'codex' ? null : estimateCost(req.model, event.inputTokens, event.outputTokens, event.cacheReadTokens ?? 0),
@@ -93,10 +103,14 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
         if (controller.signal.aborted || timedOut) return;
         if (answerText.trim() && answerText.trim().toUpperCase() !== 'SKIP') {
           if (!original) snapshots.save(id, { owner: sender.id, profileId: profile.id, payload, request, answer: answerText.trim() });
+          else if (payload.refineAnswerId) snapshots.save(payload.refineAnswerId, { ...original, request, answer: answerText.trim() });
           recordEvent({
           t: Date.now(), type: 'answer', text: answerText.trim(), profileId: profile.id,
           forced: payload.forced, usage, questionId: source.requestId, question: source.question,
-          ...(original ? { expandedFrom: payload.expandAnswerId } : {}),
+          timing: { provider: providerId, prepareMs: Math.round(providerStartedAt - requestStartedAt),
+            firstTextMs, completeMs: Math.round(performance.now() - providerStartedAt) },
+          ...(payload.expandAnswerId ? { expandedFrom: payload.expandAnswerId } : {}),
+          ...(payload.refineAnswerId ? { refinedFrom: payload.refineAnswerId } : {}),
         }, source.sessionId);
         }
         // Release the main-process slot before telling the renderer to pump its queue.

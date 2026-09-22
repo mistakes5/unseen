@@ -4,6 +4,21 @@
 
 # Unseen — your photographic memory
 
+## Classroom Copilot fork
+
+This branch adds course-specific participation, Jev question detection, prepared
+local course context, session archives, answer expansion/refinement, and an isolated
+Codex CLI answer provider. Start with [classroom setup](docs/classroom-setup.md).
+**Coding agents must read [AGENTS.md](AGENTS.md) and ask the required unresolved
+setup questions before applying a class configuration.** Experimental answer-format
+routing is not enabled; see the setup guide for measured tradeoffs and limitations.
+
+The remaining overview describes the upstream application. Local storage does not
+mean local processing: cloud STT receives audio, Jev receives transcript context,
+and a cloud answer provider receives the selected transcript/reference content.
+Choose providers and data-sharing settings explicitly; no private course materials
+or credentials are included in this fork.
+
 **Unseen is the part of your memory that never forgets.** An open-source, local-first transcription engine with a memory that compounds: dictate into any app, capture every meeting, ingest your notes — and it quietly distills all of it into a private, structured knowledge base that you *and* your AI can draw on.
 
 Bring your own AI: **Anthropic Claude, OpenAI, Google Gemini, Ollama (fully local), or any OpenAI-compatible endpoint** (LM Studio, Groq, OpenRouter, vLLM, …).

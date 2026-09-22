@@ -38,7 +38,9 @@ export function AnswerFeed(): React.JSX.Element {
   });
   const quiet = answers.filter(a => a.phase === 'skipped' || a.phase === 'cancelled');
   const visible = answers.filter(a => a.phase !== 'skipped' && a.phase !== 'cancelled');
-  const phaseLabel = (a: AnswerItem): string => a.phase === 'answering' ? 'Answering…'
+  const phaseLabel = (a: AnswerItem): string => a.refinement === 'queued' || a.refinement === 'answering' ? 'Updating context…'
+    : a.refinement === 'done' ? 'Context updated' : a.refinement === 'error' ? 'Original kept · update failed'
+    : a.phase === 'answering' ? 'Answering…'
     : a.phase === 'queued' ? 'Queued' : a.phase === 'error' ? 'Needs attention' : 'Ready';
 
   return (
@@ -73,7 +75,7 @@ export function AnswerFeed(): React.JSX.Element {
               />
             )}
             {a.phase === 'done' && a.text && <button className="ghost-btn"
-              disabled={a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
+              disabled={a.refinement === 'queued' || a.refinement === 'answering' || a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
               onClick={() => expandAnswer(a.id)}>
               {a.expansion?.phase === 'queued' ? 'Expansion queued…' : a.expansion?.phase === 'answering' ? 'Expanding…'
                 : a.expansion?.phase === 'done' ? a.expansion.visible ? 'Collapse' : 'Show expanded'

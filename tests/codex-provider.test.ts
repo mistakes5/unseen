@@ -39,6 +39,9 @@ describe('Codex CLI provider', () => {
     expect(args).toContain('fast_mode');
     expect(args).toContain('gpt-5.6-luna');
     expect(args).toContain('shell_tool');
+    for (const feature of ['plugins', 'browser_use', 'computer_use', 'image_generation', 'code_mode_host']) {
+      expect(args[args.indexOf(feature) - 1]).toBe('--disable');
+    }
     expect(args.at(-1)).toBe('-');
     expect(args.join(' ')).not.toContain('What is citizenship');
   });
@@ -75,6 +78,24 @@ describe('Codex CLI provider', () => {
     const run = async () => { for await (const _ of codexProvider.stream(request, { apiKey: null, signal: new AbortController().signal })) { /* consume */ } };
     await expect(run()).rejects.toThrow('Codex could not complete');
   });
+  it('reuses only an empty working directory, never another answer’s instruction file or thread', async () => {
+    const calls = [];
+    for (let i = 0; i < 2; i++) {
+      const child = fakeChild([
+        { type: 'item.completed', item: { type: 'agent_message', text: `Answer ${i}` } },
+        { type: 'turn.completed' },
+      ]);
+      mocks.spawn.mockReturnValueOnce(child);
+      for await (const _ of codexProvider.stream(request, { apiKey: null, signal: new AbortController().signal })) { /* consume */ }
+      calls.push(mocks.spawn.mock.calls.at(-1)!);
+    }
+    expect(calls[0][2].cwd).toBe(calls[1][2].cwd);
+    expect(calls[0][2].cwd).toContain('classroom-codex-workspace-');
+    const instructionArg = (call: any[]) => call[1].find((arg: string) => arg.startsWith('model_instructions_file='));
+    expect(instructionArg(calls[0])).not.toBe(instructionArg(calls[1]));
+    expect(calls[0][1]).toContain('--ephemeral');
+    expect(calls[1][1]).toContain('--ignore-user-config');
+  });
   it('kills the subprocess when an answer is cancelled', async () => {
     const child = fakeChild([], 0, true);
     mocks.spawn.mockReturnValue(child);
@@ -83,5 +104,19 @@ describe('Codex CLI provider', () => {
     const run = async () => { for await (const _ of codexProvider.stream(request, { apiKey: null, signal: abort.signal })) { /* consume */ } };
     await expect(run()).rejects.toThrow();
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+  it('releases a completed answer without waiting for CLI shutdown, then reaps the child', async () => {
+    const child = fakeChild([], 0, true);
+    child.stdin.on('finish', () => {
+      child.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Complete.' } }) + '\n');
+      child.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }) + '\n');
+    });
+    mocks.spawn.mockReturnValue(child);
+    const events = [];
+    for await (const e of codexProvider.stream(request, { apiKey: null, signal: new AbortController().signal })) events.push(e);
+    expect(events.at(-1)).toEqual({ type: 'done' });
+    expect(child.exitCode).toBeNull();
+    expect(child.kill).not.toHaveBeenCalled();
+    child.exitCode = 0; child.stdout.end(); child.stderr.end(); child.emit('close', 0);
   });
 });

@@ -221,7 +221,7 @@ export class SttClient {
           });
         }
       };
-      recorder.start(250);
+      recorder.start(100); // Smaller upload buffers; recognition/endpointing unchanged.
       void this.replay?.start(() => {
         // Leave 3 seconds of silent stream to flush vendor endpointing/finals.
         this.replayEndTimer = setTimeout(() => {

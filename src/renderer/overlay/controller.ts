@@ -1,10 +1,13 @@
 // Independent listening, batched question detection, and two answer slots.
-import type { AnswerPayload, QuestionCandidate, Usage } from '../../shared/types';
+import type { AnswerPayload, QuestionBatch, QuestionCandidate, QuestionJudgment, Usage } from '../../shared/types';
+import { CLARIFICATION_THRESHOLD, CLARIFICATION_WINDOW_MS } from '../../shared/classroom-context';
+import { isParticipationCourse } from '../../shared/course-participation';
 import { TranscriptStore } from './transcript-store';
 import { evaluateTriggers } from './trigger-engine/engine';
 import { SttClient } from './stt/client';
 import { useOverlayStore } from './store';
 import { AnswerQueue, questionSpans } from './question-queue';
+import { detectionDelay } from './detection-timing';
 
 const transcript = new TranscriptStore();
 let client: SttClient | null = null;
@@ -19,6 +22,9 @@ let candidates: (QuestionCandidate & { receivedAt: number })[] = [];
 let detectionTimer: ReturnType<typeof setTimeout> | null = null;
 const payloads = new Map<string, AnswerPayload>();
 const expansions = new Map<string, string>();
+const refinements = new Map<string, { parent: string; text: string }>();
+const pendingRefinements = new Map<string, string>();
+let recent: (NonNullable<QuestionBatch['recentQuestion']> & { startedAt: number; used: boolean }) | null = null;
 const seen = new Map<string, number>();
 function store() { return useOverlayStore.getState(); }
 function pushTranscript(): void { store().setTranscript(transcript.turns(), transcript.interim); }
@@ -38,14 +44,31 @@ const queue = new AnswerQueue(q => {
   const payload = payloads.get(q.id);
   if (!payload) { queue.finish(q.id); return; }
   const parent = expansions.get(q.id);
-  if (parent) store().patchExpansion(parent, { phase: 'answering' });
-  else store().setAnswerPhase(q.id, 'answering');
+  const refinement = refinements.get(q.id);
+  if (refinement) store().patchRefinement(refinement.parent, 'answering');
+  else if (parent) store().patchExpansion(parent, { phase: 'answering' });
+  else {
+    // Include speech that arrived while Jev or another answer was running.
+    // Keep the selected question fixed, even when this includes a later question.
+    payload.fullTranscript = transcript.fullTranscript();
+    if (recent?.id === q.id) { recent.context = payload.fullTranscript; recent.followingSpeech = ''; }
+    store().setAnswerPhase(q.id, 'answering');
+  }
   status();
   void window.unseen.answerStart(payload).catch(error => settle(q.id, { error: String(error) }));
 });
 
 function settle(id: string, opts: { error?: string; usage?: Usage | null }): void {
   if (!queue.has(id)) return; // stale completion from stopped/previous course
+  const refinement = refinements.get(id);
+  if (refinement) {
+    const text = refinement.text.trim();
+    const error = opts.error || (!text || text.toUpperCase() === 'SKIP' ? 'Context update produced no answer; original kept.' : undefined);
+    store().patchRefinement(refinement.parent, error ? 'error' : 'done', error ? undefined : text);
+    store().expansionUsage(opts.usage);
+    if (error) recordStatus(id, 'error', error);
+    refinements.delete(id); payloads.delete(id); queue.finish(id); status(); return;
+  }
   const parent = expansions.get(id);
   if (parent) {
     const text = store().answers.find(a => a.id === parent)?.expansion?.text.trim();
@@ -63,7 +86,23 @@ function settle(id: string, opts: { error?: string; usage?: Usage | null }): voi
     recordStatus(id, 'skipped', 'The answer model skipped this question.');
   } else if (opts.error) recordStatus(id, 'error', opts.error);
   payloads.delete(id);
-  queue.finish(id); status();
+  queue.finish(id);
+  const clarification = pendingRefinements.get(id);
+  pendingRefinements.delete(id);
+  if (clarification && !skipped && !opts.error) refineAnswer(id, clarification);
+  status();
+}
+
+function refineAnswer(parentId: string, clarification: string): void {
+  const answer = store().answers.find(a => a.id === parentId);
+  const profile = store().activeProfile;
+  if (!accepting || !profile || answer?.phase !== 'done' || answer.expansion || answer.refinement) return;
+  const id = `${epoch}-refine-${++seq}`;
+  refinements.set(id, { parent: parentId, text: '' });
+  payloads.set(id, { requestId: id, refineAnswerId: parentId, clarification, profileId: profile.id,
+    sessionId, question: answer.question, fullTranscript: '', newSegment: '', forced: false, detected: true, codeMode: false, userSpeaker: 0 });
+  store().patchRefinement(parentId, 'queued');
+  queue.enqueue({ id, text: answer.question ?? '', speaker: answer.speaker ?? 0, context: '', priority: -1 });
 }
 
 function enqueue(q: QuestionCandidate, forced = false): void {
@@ -78,6 +117,10 @@ function enqueue(q: QuestionCandidate, forced = false): void {
   payloads.set(q.id, { requestId: q.id, profileId: profile.id, sessionId,
     question: q.text, speaker: q.speaker, fullTranscript: q.context,
     newSegment: `[S${q.speaker}] ${q.text}`, forced, detected: true, codeMode: false, userSpeaker: 0 });
+  if (!forced && isParticipationCourse(profile.id)
+    && (!recent || Number(q.id.split('-').at(-1)) > Number(recent.id.split('-').at(-1)))) {
+    recent = { id: q.id, text: q.text, context: q.context, followingSpeech: '', startedAt: now, used: false };
+  }
   const preceding = q.priorContext?.replace(/\[S\d+\]\s*/g, '').trim();
   store().beginAnswer(q.id, q.text, q.speaker, preceding
     ? `${preceding.length > 240 ? '…' : ''}${preceding.slice(-240)}` : undefined);
@@ -90,25 +133,35 @@ function scheduleDetection(): void {
   if (!accepting || detecting || !candidates.length) return;
   if (detectionTimer) clearTimeout(detectionTimer);
   // Allow a short continuation, but never debounce continuous speech forever.
-  const remaining = Math.max(0, candidates[0].receivedAt + 2200 - Date.now());
-  detectionTimer = setTimeout(() => { detectionTimer = null; void detectPending(); }, Math.min(750, remaining));
+  detectionTimer = setTimeout(() => { detectionTimer = null; void detectPending(); }, detectionDelay(candidates, Date.now(), Boolean(transcript.interim.trim())));
 }
 async function detectPending(): Promise<void> {
   const profile = store().activeProfile;
   if (!accepting || detecting || !profile || !candidates.length) return;
   const batch = candidates.splice(0, 12).map(c => ({ ...c, context: transcript.fullTranscript() }));
   const generation = epoch;
+  const recentQuestion = recent && !recent.used && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS
+    && recent.followingSpeech.trim() ? { id: recent.id, text: recent.text, context: recent.context, followingSpeech: recent.followingSpeech } : undefined;
   detecting = true; status();
   try {
-    const results = store().settings?.questionDetection.provider === 'jev'
-      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch })
+    const results: QuestionJudgment[] = store().settings?.questionDetection.provider === 'jev'
+      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch, recentQuestion })
       : batch.map(c => ({ id: c.id, probability: evaluateTriggers(profile.triggers, { newText: c.text, recentText: c.context }).fire ? 1 : 0 }));
     if (generation !== epoch || !accepting) return;
+    const clarification = results.find(r => r.kind === 'clarification' && r.id === recentQuestion?.id);
+    if (recentQuestion && recent?.id === recentQuestion.id && !recent.used
+      && clarification && clarification.probability >= CLARIFICATION_THRESHOLD) {
+      recent.used = true; // at most one automatic update per original question
+      const answer = store().answers.find(a => a.id === recentQuestion.id);
+      if (answer?.phase === 'answering') pendingRefinements.set(recentQuestion.id, recentQuestion.followingSpeech);
+      else if (answer?.phase === 'done') refineAnswer(recentQuestion.id, recentQuestion.followingSpeech);
+      // A queued answer gets the freshest transcript at start instead of a second call.
+    }
     const threshold = store().settings?.questionDetection.threshold ?? 0.8;
     store().addDetectionChecks(batch.map(c => ({ id: c.id, text: c.text,
       probability: results.find(r => r.id === c.id)!.probability, threshold,
       passed: results.find(r => r.id === c.id)!.probability >= threshold })));
-    const accepted = batch.filter(c => results.some(r => r.id === c.id && r.probability >= threshold));
+    const accepted = batch.filter(c => results.some(r => !r.kind && r.id === c.id && r.probability >= threshold));
     // Professor candidates take available slots first, while cards retain speech order.
     accepted.sort((a, b) => Number(b.speaker === store().professorSpeaker) - Number(a.speaker === store().professorSpeaker));
     for (const q of accepted) enqueue(q);
@@ -133,16 +186,19 @@ function cancelWork(): void {
   for (const q of queue.clear()) {
     recordStatus(q.id, 'cancelled', 'Listening stopped, paused, or course changed.');
     const parent = expansions.get(q.id);
-    if (parent) store().patchExpansion(parent, { phase: 'error', error: 'Expansion cancelled. You can retry.' });
+    const refinement = refinements.get(q.id);
+    if (refinement) store().patchRefinement(refinement.parent, 'error');
+    else if (parent) store().patchExpansion(parent, { phase: 'error', error: 'Expansion cancelled. You can retry.' });
     else { store().finishAnswer(q.id, {}); store().setAnswerPhase(q.id, 'cancelled'); }
   }
-  payloads.clear(); expansions.clear();
+  payloads.clear(); expansions.clear(); refinements.clear(); pendingRefinements.clear(); recent = null;
 }
 
 export function expandAnswer(answerId: string | number): void {
   const answer = store().answers.find(a => a.id === answerId);
   const profile = store().activeProfile;
   if (!profile || !answer?.done || answer.phase !== 'done' || !answer.text.trim()) return;
+  if (answer.refinement === 'queued' || answer.refinement === 'answering') return;
   if (answer.expansion?.phase === 'queued' || answer.expansion?.phase === 'answering') return;
   if (answer.expansion?.phase === 'done') {
     store().patchExpansion(answerId, { visible: !answer.expansion.visible }); return;
@@ -236,7 +292,9 @@ export async function initController(): Promise<void> {
   window.unseen.onAnswerDelta(({ requestId, text }) => {
     if (!queue.has(requestId)) return;
     const parent = expansions.get(requestId);
-    if (parent) {
+    const refinement = refinements.get(requestId);
+    if (refinement) refinement.text += text;
+    else if (parent) {
       const previous = store().answers.find(a => a.id === parent)?.expansion?.text ?? '';
       store().patchExpansion(parent, { text: previous + text });
     } else store().appendAnswer(requestId, text);
@@ -270,6 +328,9 @@ export async function initController(): Promise<void> {
       const profile = store().activeProfile;
       if (!profile) return;
       window.unseen.sessionRecordFinal({ text: event.text, speaker: event.speaker, profileId: profile.id, sessionId });
+      if (recent && !recent.used && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS) {
+        recent.followingSpeech = `${recent.followingSpeech}\n[S${event.speaker}] ${event.text}`.trim().slice(-2500);
+      }
       for (const text of questionSpans(event.text)) {
         for (const pending of candidates) pending.followingContext = `${pending.followingContext ?? ''} [S${event.speaker}] ${text}`.trim().slice(-2500);
         const priorContext = transcript.fullTranscript();

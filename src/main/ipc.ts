@@ -1,6 +1,7 @@
 import { app, ipcMain, dialog } from 'electron';
 import { IPC } from '../shared/ipc-contract';
 import type { AnswerPayload, DeepPartial, Settings, QuestionBatch } from '../shared/types';
+import { CLARIFICATION_THRESHOLD } from '../shared/classroom-context';
 import { settings } from './services/settings';
 import { setSecret, secretsStatus } from './services/secrets';
 import {
@@ -131,8 +132,9 @@ export function registerIpc(): void {
       // Only real class sessions are archived; ad-hoc diagnostic IPC calls are not.
       if (batch.sessionId) for (const result of results) recordEvent({
         t: Date.now(), type: 'question-check', questionId: result.id, profileId: batch.profileId,
-        text: batch.candidates.find(c => c.id === result.id)!.text, probability: result.probability,
-        threshold, passed: result.probability >= threshold, elapsedMs: Date.now() - began,
+        text: result.kind === 'clarification' ? `[clarification] ${batch.recentQuestion!.followingSpeech}` : batch.candidates.find(c => c.id === result.id)!.text, probability: result.probability,
+        threshold: result.kind === 'clarification' ? CLARIFICATION_THRESHOLD : threshold,
+        passed: result.probability >= (result.kind === 'clarification' ? CLARIFICATION_THRESHOLD : threshold), elapsedMs: Date.now() - began,
         promptVersion: QUESTION_PROMPT_VERSION,
       }, batch.sessionId);
       return results;

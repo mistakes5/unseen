@@ -11,6 +11,14 @@ import { Transcript } from '../src/renderer/overlay/components/Transcript';
 beforeEach(() => {
   fixture.state = { answers: [], professorSpeaker: 0, settings: structuredClone(DEFAULT_SETTINGS), turns: [], interim: '', sessionError: null };
 });
+it('keeps the original visible during context updates and labels the same card', () => {
+  fixture.state.answers = [{ id: 'q-1', ts: '14:28', question: 'Which term?', text: 'Original explanation.', phase: 'done', refinement: 'answering' }];
+  const html = renderToStaticMarkup(<AnswerFeed />);
+  expect(html).toContain('Updating context…');
+  expect(html).toContain('Original explanation.');
+  expect(html.match(/<article /g)).toHaveLength(1);
+  expect(html).toContain('disabled');
+});
 it('keeps every active question, including fragments, newest first with distinct phases', () => {
   fixture.state.answers = [
     { id: 'q-3', ts: '14:30', question: 'the function?', text: '', phase: 'queued' },

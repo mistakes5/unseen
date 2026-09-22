@@ -60,6 +60,7 @@ export function sessionToMarkdown(events: SessionEvent[]): string {
       lines.push(`> **🤖 ${hhmm(ev.t)}** *(${ev.profileId}${ev.forced ? ', asked' : ''})*`);
       lines.push('>');
       if (ev.expandedFrom) lines.push(`> Expanded answer to ${ev.expandedFrom}`, '>');
+      if (ev.refinedFrom) lines.push(`> Context-refined answer to ${ev.refinedFrom}`, '>');
       if (ev.questionId) lines.push(`> Question: ${ev.questionId}${ev.question ? ` — ${ev.question}` : ''}`, '>');
       for (const l of ev.text.split('\n')) lines.push(`> ${l}`);
       lines.push('');

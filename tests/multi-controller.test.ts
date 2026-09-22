@@ -32,6 +32,107 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+it('sends completed questions at 250ms but still saves speech and waits 750ms for fragments', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'Why does this matter?', speaker: 0 });
+  expect(api.sessionRecordFinal).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(249);
+  expect(api.questionsDetect).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(api.questionsDetect).toHaveBeenCalledOnce();
+  mock.opts!.onEvent({ type: 'final', text: 'Someone who did the reading', speaker: 0 });
+  expect(api.sessionRecordFinal).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(749);
+  expect(api.questionsDetect).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(api.questionsDetect).toHaveBeenCalledTimes(2);
+});
+
+it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of-ai'].flatMap(id =>
+  ['done', 'answering'].map(phase => ({ id, phase }))))('refines a $phase answer for $id once in the same card', async ({ id, phase }) => {
+  api.profilesGetActive = async () => ({ ...profile, id });
+  api.sessionBegin.mockResolvedValue(`${id}/test-session`);
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => [
+    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1 })),
+    ...(batch.recentQuestion ? [{ id: batch.recentQuestion.id, probability: 0.95, kind: 'clarification' }] : []),
+  ]);
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'What attributes describe postmodernism?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const q = api.answerStart.mock.calls[0][0];
+  listeners.AnswerDelta({ requestId: q.requestId, text: 'Original short explanation.' });
+  if (phase === 'done') listeners.AnswerDone({ requestId: q.requestId, usage: null });
+  await vi.advanceTimersByTimeAsync(3250);
+  mock.opts!.onEvent({ type: 'final', text: 'Some key terms to put in these quadrants.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  if (phase === 'answering') {
+    expect(api.answerStart).toHaveBeenCalledOnce();
+    listeners.AnswerDone({ requestId: q.requestId, usage: null });
+  }
+  const revision = api.answerStart.mock.calls[1][0];
+  expect(revision.refineAnswerId).toBe(q.requestId);
+  expect(revision.clarification).toContain('quadrants');
+  expect(useOverlayStore.getState().answers).toHaveLength(1);
+  listeners.AnswerDelta({ requestId: revision.requestId, text: 'Skepticism — questioning universal claims.' });
+  expect(useOverlayStore.getState().answers[0].text).toBe('Original short explanation.');
+  listeners.AnswerDone({ requestId: revision.requestId, usage: null });
+  expect(useOverlayStore.getState().answers[0]).toMatchObject({ id: q.requestId, refinement: 'done', text: 'Skepticism — questioning universal claims.' });
+  mock.opts!.onEvent({ type: 'final', text: 'Compared with liberalism.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  c.expandAnswer(q.requestId);
+  expect(api.answerStart.mock.calls[2][0].expandAnswerId).toBe(q.requestId);
+});
+
+it('keeps the original after a failed refinement and ignores refinement output after stop', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => [
+    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1 })),
+    ...(batch.recentQuestion ? [{ id: batch.recentQuestion.id, probability: 0.95, kind: 'clarification' }] : []),
+  ]);
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'What attributes?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const q = api.answerStart.mock.calls[0][0];
+  listeners.AnswerDelta({ requestId: q.requestId, text: 'Original.' });
+  listeners.AnswerDone({ requestId: q.requestId, usage: null });
+  mock.opts!.onEvent({ type: 'final', text: 'A term for this chart.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const revision = api.answerStart.mock.calls[1][0];
+  listeners.AnswerDelta({ requestId: revision.requestId, text: 'Partial failed update' });
+  listeners.AnswerError({ requestId: revision.requestId, error: 'Network unavailable' });
+  expect(useOverlayStore.getState().answers[0]).toMatchObject({ text: 'Original.', refinement: 'error' });
+  c.toggleListening();
+  listeners.AnswerDone({ requestId: revision.requestId, usage: null });
+  expect(useOverlayStore.getState().answers[0].text).toBe('Original.');
+});
+
+it('expires the clarification window and does not refine an independent question', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => [
+    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1 })),
+    ...(batch.recentQuestion ? [{ id: batch.recentQuestion.id, probability: 0.05, kind: 'clarification' }] : []),
+  ]);
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'What is identity?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const q = api.answerStart.mock.calls[0][0];
+  listeners.AnswerDelta({ requestId: q.requestId, text: 'A sense of who we are.' });
+  listeners.AnswerDone({ requestId: q.requestId, usage: null });
+  mock.opts!.onEvent({ type: 'final', text: 'Moving to the next topic.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  expect(api.answerStart).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(12000);
+  mock.opts!.onEvent({ type: 'final', text: 'A label for this chart.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  expect(api.questionsDetect.mock.calls.at(-1)[0].recentQuestion).toBeUndefined();
+  expect(api.answerStart).toHaveBeenCalledOnce();
+});
+
 it('waits for nearby finalized speech before detecting and sends the completed context to answers', async () => {
   const c = await import('../src/renderer/overlay/controller');
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
@@ -39,7 +140,7 @@ it('waits for nearby finalized speech before detecting and sends the completed c
   await vi.advanceTimersByTimeAsync(500);
   expect(api.questionsDetect).not.toHaveBeenCalled();
   mock.opts!.onEvent({ type: 'final', text: 'follow the group?', speaker: 1 });
-  await vi.advanceTimersByTimeAsync(749);
+  await vi.advanceTimersByTimeAsync(249);
   expect(api.questionsDetect).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(2);
   const batch = api.questionsDetect.mock.calls[0][0];
@@ -53,6 +154,9 @@ it('caps the settling delay during continuous interim speech and Ask now bypasse
   const c = await import('../src/renderer/overlay/controller');
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'Can anyone explain this?', speaker: 0 });
+  // A continuation begins within the fast window; it still gets the longer
+  // fragment settle time, bounded by the original hard deadline.
+  mock.opts!.onEvent({ type: 'interim', text: 'An ongoing continuation' });
   for (let i = 0; i < 4; i++) {
     await vi.advanceTimersByTimeAsync(500);
     mock.opts!.onEvent({ type: 'interim', text: 'An ongoing continuation' });

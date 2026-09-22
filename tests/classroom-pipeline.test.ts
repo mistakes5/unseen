@@ -50,6 +50,10 @@ describe('classroom Jev → answer flow', () => {
     await runAnswer({ send } as unknown as WebContents, payload);
     expect(mocks.stream).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-luna', reasoningEffort: 'low' }), expect.anything());
     expect(send).toHaveBeenCalledWith('answer:delta', 'A suggested contribution.');
+    expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ timing: {
+      provider: mocks.config.llm.provider, prepareMs: expect.any(Number),
+      firstTextMs: expect.any(Number), completeMs: expect.any(Number),
+    } }), undefined);
   });
 
   it('allows Ask now without a TypeSafe key', async () => {
@@ -128,5 +132,21 @@ describe('classroom Jev → answer flow', () => {
     expect(mocks.stream).not.toHaveBeenCalled();
     expect(mocks.knowledge).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith('answer:error', { requestId: 'missing', error: expect.stringContaining('unavailable') });
+  });
+
+  it('archives both original and refined answers in the original session, then expands the revised snapshot without retrieval', async () => {
+    const sender = { send: vi.fn(), id: 92 } as unknown as WebContents;
+    await runAnswer(sender, { ...payload, detected: true, requestId: 'refine-source', question: 'What attributes?', sessionId: 'political-identities/saved' });
+    mocks.knowledge.mockClear(); mocks.detect.mockClear();
+    mocks.stream.mockImplementation(async function* () { yield { type: 'delta', text: 'Skepticism — questioning universal claims.' }; });
+    await runAnswer(sender, { ...payload, requestId: 'refine-child', refineAnswerId: 'refine-source', clarification: 'Key terms for the chart.', sessionId: 'wrong' });
+    expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ questionId: 'refine-source', refinedFrom: 'refine-source', text: 'Skepticism — questioning universal claims.' }), 'political-identities/saved');
+    expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ questionId: 'refine-source', text: 'A suggested contribution.' }), 'political-identities/saved');
+    expect(mocks.knowledge).not.toHaveBeenCalled();
+    expect(mocks.detect).not.toHaveBeenCalled();
+    await runAnswer(sender, { ...payload, requestId: 'refine-expand', expandAnswerId: 'refine-source' });
+    const req = mocks.stream.mock.calls.at(-1)![0];
+    expect(req.messages.at(-2).content).toBe('Skepticism — questioning universal claims.');
+    expect(req.messages.some((m: any) => m.content.includes('Key terms for the chart.'))).toBe(true);
   });
 });

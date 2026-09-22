@@ -52,7 +52,7 @@ describe('standalone audio -> recorder -> socket -> transcript', () => {
     mocks.silent.mockResolvedValue({ stream: { getTracks: () => [] }, start, dispose });
     const client = new SttClient({ getDescriptor: async () => ({ providerId: 'deepgram', input: 'file-replay', replay: { wavBase64: 'test', label: 'test lecture' }, wsUrl: 'wss://example.test' }), getMicDeviceId: () => 'default', onEvent: vi.fn(), onStatus });
     await client.start(); Socket.instances[0].onopen!();
-    expect(Recorder.instances[0].start).toHaveBeenCalledWith(250);
+    expect(Recorder.instances[0].start).toHaveBeenCalledWith(100);
     expect(start).toHaveBeenCalledOnce();
     expect(getUserMedia).not.toHaveBeenCalled(); expect(poll).not.toHaveBeenCalled();
     start.mock.calls[0][0]();
