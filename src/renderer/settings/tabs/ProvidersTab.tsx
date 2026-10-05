@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { ModelInfo, ProviderInfo, VerifyResult } from '../../../shared/types';
 import type { TabProps } from '../App';
+import { ModelPicker } from '../components/ModelPicker';
+import { ANSWER_MODEL_DEFAULTS, answerModelChoices, answerProviderSelection } from '../../../shared/answer-models';
 
 function KeyField({
   providerId,
@@ -73,7 +75,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
       <h3>Answers (LLM)</h3>
       <div className="field">
         <label>Provider</label>
-        <select value={llmId} onChange={(e) => set({ llm: { provider: e.target.value } })}>
+        <select value={llmId} onChange={(e) => set(answerProviderSelection(e.target.value))}>
           {providers.llm.map((p) => (
             <option key={p.id} value={p.id}>
               {p.displayName}
@@ -117,29 +119,14 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
         </>
       )}
 
-      <div className="field">
-        <label>Model</label>
-        <div className="row">
-          <input
-            list="model-options"
-            value={settings.llm.model}
-            onChange={(e) => set({ llm: { model: e.target.value } })}
-          />
-          <button
-            className="btn secondary"
-            onClick={() => void window.unseen.modelsList(llmId).then(setModels)}
-          >
-            ↻
-          </button>
-        </div>
-        <datalist id="model-options">
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label ?? m.id}
-            </option>
-          ))}
-        </datalist>
-      </div>
+      <ModelPicker
+        key={llmId}
+        value={settings.llm.model}
+        models={answerModelChoices(llmId, models)}
+        allowCustom={!ANSWER_MODEL_DEFAULTS[llmId]}
+        onChange={model => set({ llm: { model, ...(llmId === 'codex' && model === 'gpt-6-luna' ? { reasoningEffort: 'low' as const } : {}) } })}
+        onRefresh={() => void window.unseen.modelsList(llmId).then(setModels)}
+      />
 
       <div className="field">
         <button

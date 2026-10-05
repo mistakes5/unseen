@@ -63,6 +63,8 @@ textarea {
 }
 .row { display: flex; gap: 8px; align-items: center; }
 .row input { flex: 1; }
+.row select { flex: 1; min-width: 0; }
+.custom-model { margin-top: 8px; }
 button.btn {
   background: rgba(96,165,250,0.2);
   border: 1px solid rgba(96,165,250,0.4);

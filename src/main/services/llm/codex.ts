@@ -64,7 +64,6 @@ export const codexProvider: LlmProvider = {
   needsApiKey: false,
   async listModels() { return [
     { id: 'gpt-6-luna', label: 'GPT-6 Luna · low reasoning · Fast' },
-    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna · low reasoning · Fast' },
   ]; },
   async verify() {
     try {

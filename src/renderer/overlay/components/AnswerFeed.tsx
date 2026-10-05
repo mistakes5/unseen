@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { memo, useLayoutEffect, useRef, useState } from 'react';
 import { useOverlayStore, type AnswerItem } from '../store';
 import { renderMarkdown } from '../markdown';
 import { expandAnswer } from '../controller';
@@ -19,7 +19,52 @@ function CopyButton({ text }: { text: string }): React.JSX.Element {
   );
 }
 
-export function AnswerFeed(): React.JSX.Element {
+// Stable text and card props keep old answers out of each streamed update.
+const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }): React.JSX.Element {
+  // renderMarkdown escapes all model output before injecting.
+  return <div className="body" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />;
+});
+
+const AnswerCard = memo(function AnswerCard({ a, labels, professor }: {
+  a: AnswerItem;
+  labels: boolean;
+  professor: number | null;
+}): React.JSX.Element {
+  const phaseLabel = (a: AnswerItem): string => a.refinement === 'queued' || a.refinement === 'answering' ? 'Updating context…'
+    : a.refinement === 'done' ? 'Context updated' : a.refinement === 'error' ? 'Original kept · update failed'
+    : a.phase === 'answering' ? 'Answering…'
+    : a.phase === 'queued' ? 'Queued' : a.phase === 'error' ? 'Needs attention' : 'Ready';
+  return (
+    <article className={`answer-item phase-${a.phase ?? 'done'}`}>
+      <div className="meta">
+        <span>{a.ts}{labels && a.speaker !== undefined ? ` · ${a.speaker === professor ? 'Professor' : `S${a.speaker}`}` : ''}</span>
+        <span className={`phase-badge ${a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
+        {a.text && <CopyButton text={a.text} />}
+      </div>
+      {a.question && <div className="question-text">{a.question}</div>}
+      {a.contextHint && <details className="question-context"><summary>Discussion context</summary><div>{a.contextHint}</div></details>}
+      {a.error ? (
+        <span className="err">error: {a.error}</span>
+      ) : (
+        <MarkdownBody text={a.text} />
+      )}
+      {a.phase === 'done' && a.text && <button className="ghost-btn"
+        disabled={a.refinement === 'queued' || a.refinement === 'answering' || a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
+        onClick={() => expandAnswer(a.id)}>
+        {a.expansion?.phase === 'queued' ? 'Expansion queued…' : a.expansion?.phase === 'answering' ? 'Expanding…'
+          : a.expansion?.phase === 'done' ? a.expansion.visible ? 'Collapse' : 'Show expanded'
+          : a.expansion?.phase === 'error' ? 'Retry expansion' : 'Expand'}
+      </button>}
+      {a.expansion?.visible && <div className="expanded-answer">
+        <div className="meta"><span>Expanded explanation</span>{a.expansion.text && <CopyButton text={a.expansion.text} />}</div>
+        {a.expansion.error && <span className="err">{a.expansion.error}</span>}
+        <MarkdownBody text={a.expansion.text} />
+      </div>}
+    </article>
+  );
+});
+
+export const AnswerFeed = memo(function AnswerFeed(): React.JSX.Element {
   const answers = useOverlayStore((s) => s.answers);
   const professor = useOverlayStore(s => s.professorSpeaker);
   const labels = useOverlayStore(s => s.settings?.stt.diarize ?? false);
@@ -38,10 +83,6 @@ export function AnswerFeed(): React.JSX.Element {
   });
   const quiet = answers.filter(a => a.phase === 'skipped' || a.phase === 'cancelled');
   const visible = answers.filter(a => a.phase !== 'skipped' && a.phase !== 'cancelled');
-  const phaseLabel = (a: AnswerItem): string => a.refinement === 'queued' || a.refinement === 'answering' ? 'Updating context…'
-    : a.refinement === 'done' ? 'Context updated' : a.refinement === 'error' ? 'Original kept · update failed'
-    : a.phase === 'answering' ? 'Answering…'
-    : a.phase === 'queued' ? 'Queued' : a.phase === 'error' ? 'Needs attention' : 'Ready';
 
   return (
     <>
@@ -57,36 +98,7 @@ export function AnswerFeed(): React.JSX.Element {
           </div>
         )}
         {visible.map((a) => (
-          <article className={`answer-item phase-${a.phase ?? 'done'}`} key={a.id}>
-            <div className="meta">
-              <span>{a.ts}{labels && a.speaker !== undefined ? ` · ${a.speaker === professor ? 'Professor' : `S${a.speaker}`}` : ''}</span>
-              <span className={`phase-badge ${a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
-              {a.text && <CopyButton text={a.text} />}
-            </div>
-            {a.question && <div className="question-text">{a.question}</div>}
-            {a.contextHint && <details className="question-context"><summary>Discussion context</summary><div>{a.contextHint}</div></details>}
-            {a.error ? (
-              <span className="err">error: {a.error}</span>
-            ) : (
-              <div
-                className="body"
-                // renderMarkdown escapes all model output before injecting.
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(a.text) }}
-              />
-            )}
-            {a.phase === 'done' && a.text && <button className="ghost-btn"
-              disabled={a.refinement === 'queued' || a.refinement === 'answering' || a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
-              onClick={() => expandAnswer(a.id)}>
-              {a.expansion?.phase === 'queued' ? 'Expansion queued…' : a.expansion?.phase === 'answering' ? 'Expanding…'
-                : a.expansion?.phase === 'done' ? a.expansion.visible ? 'Collapse' : 'Show expanded'
-                : a.expansion?.phase === 'error' ? 'Retry expansion' : 'Expand'}
-            </button>}
-            {a.expansion?.visible && <div className="expanded-answer">
-              <div className="meta"><span>Expanded explanation</span>{a.expansion.text && <CopyButton text={a.expansion.text} />}</div>
-              {a.expansion.error && <span className="err">{a.expansion.error}</span>}
-              <div className="body" dangerouslySetInnerHTML={{ __html: renderMarkdown(a.expansion.text) }} />
-            </div>}
-          </article>
+          <AnswerCard key={a.id} a={a} labels={labels} professor={professor} />
         ))}
         {quiet.length > 0 && <details className="quiet-answers"><summary>{quiet.length} skipped or cancelled · show history</summary>
           {quiet.map(a => <div key={a.id} className="quiet-answer"><span>{a.ts} · {a.phase}</span><div>{a.question}</div></div>)}
@@ -107,4 +119,4 @@ export function AnswerFeed(): React.JSX.Element {
       )}
     </>
   );
-}
+});
