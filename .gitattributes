@@ -1,0 +1,2 @@
+# Preserve exact unified-diff context bytes in the pinned third-party patch.
+vendor/omp/local.patch -whitespace
