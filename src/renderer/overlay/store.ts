@@ -8,9 +8,11 @@ export interface AnswerItem {
   text: string;
   done: boolean;
   error?: string;
+  canRetry?: boolean;
   question?: string;
   contextHint?: string;
   refinement?: 'queued' | 'answering' | 'done' | 'error';
+  responseKind?: 'question-suggestion';
   speaker?: number;
   phase?: 'queued' | 'answering' | 'done' | 'cancelled' | 'skipped' | 'error';
   expansion?: { text: string; phase: 'queued' | 'answering' | 'done' | 'error'; error?: string; visible: boolean };
@@ -40,14 +42,17 @@ interface OverlayState {
   sessionError: string | null;
   detectionChecks: DetectionCheck[];
   detectionCount: number;
+  detectionError: string | null;
+  uncheckedSegments: number;
   addDetectionChecks(checks: DetectionCheck[]): void;
 
   setStatus(kind: StatusKind, text: string): void;
   setTranscript(turns: TranscriptTurn[], interim: string): void;
-  beginAnswer(id: string | number, question?: string, speaker?: number, contextHint?: string): void;
+  beginAnswer(id: string | number, question?: string, speaker?: number, contextHint?: string, responseKind?: 'question-suggestion'): void;
+  restartAnswer(id: string | number, requestId: string): void;
   setAnswerPhase(id: string | number, phase: NonNullable<AnswerItem['phase']>): void;
   appendAnswer(id: string | number, delta: string): void;
-  finishAnswer(id: string | number, opts: { discard?: boolean; error?: string; usage?: Usage | null }): void;
+  finishAnswer(id: string | number, opts: { discard?: boolean; error?: string; usage?: Usage | null; canRetry?: boolean }): void;
   patchExpansion(id: string | number, patch: Partial<NonNullable<AnswerItem['expansion']>>): void;
   patchRefinement(id: string, phase: NonNullable<AnswerItem['refinement']>, text?: string): void;
   expansionUsage(usage?: Usage | null): void;
@@ -70,18 +75,21 @@ export const useOverlayStore = create<OverlayState>((set) => ({
   sessionError: null,
   detectionChecks: [],
   detectionCount: 0,
+  detectionError: null,
+  uncheckedSegments: 0,
   addDetectionChecks: checks => set(s => ({ detectionChecks: [...checks.slice().reverse(), ...s.detectionChecks].slice(0, 20), detectionCount: s.detectionCount + checks.length })),
 
   setStatus: (kind, text) => set({ status: { kind, text } }),
   setTranscript: (turns, interim) => set({ turns, interim }),
 
-  beginAnswer: (id, question, speaker, contextHint) =>
+  beginAnswer: (id, question, speaker, contextHint, responseKind) =>
     set((s) => ({
       answers: [
         {
           id,
           question,
           contextHint,
+          responseKind,
           speaker,
           phase: 'queued' as const,
           ts: new Date().toLocaleTimeString([], {
@@ -96,6 +104,8 @@ export const useOverlayStore = create<OverlayState>((set) => ({
       ].sort((a, b) => Number(String(b.id).split('-').at(-1)) - Number(String(a.id).split('-').at(-1))),
     })),
 
+  restartAnswer: (id, requestId) => set(s => ({ answers: s.answers.map(a => a.id === id
+    ? { ...a, id: requestId, text: '', error: undefined, done: false, phase: 'queued', canRetry: false } : a) })),
   setAnswerPhase: (id, phase) => set(s => ({ answers: s.answers.map(a => a.id === id ? { ...a, phase } : a) })),
   patchExpansion: (id, patch) => set(s => ({ answers: s.answers.map(a => a.id === id
     ? { ...a, expansion: { text: '', phase: 'queued', visible: true, ...a.expansion, ...patch } } : a) })),
@@ -107,11 +117,11 @@ export const useOverlayStore = create<OverlayState>((set) => ({
       answers: s.answers.map((a) => (a.id === id ? { ...a, text: a.text + delta } : a)),
     })),
 
-  finishAnswer: (id, { discard, error, usage }) =>
+  finishAnswer: (id, { discard, error, usage, canRetry }) =>
     set((s) => ({
       answers: discard
         ? s.answers.filter((a) => a.id !== id)
-        : s.answers.map((a) => (a.id === id ? { ...a, done: true, error, phase: error ? 'error' : 'done' } : a)),
+        : s.answers.map((a) => (a.id === id ? { ...a, done: true, error, canRetry, phase: error ? 'error' : 'done' } : a)),
       usage: usage ?? s.usage,
       sessionCost: s.sessionCost + (usage?.estimatedCost ?? 0),
     })),

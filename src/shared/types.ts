@@ -177,6 +177,8 @@ export type TranscriptEvent =
 // ---- Answer flow ----
 
 export interface AnswerPayload {
+  /** Speech captured with the selected question, preserved across queue delays. */
+  questionContext?: string;
   /** Expand a completed answer using its main-process context snapshot. */
   expandAnswerId?: string;
   /** One bounded short-answer revision using later clarifying speech. */
@@ -188,6 +190,8 @@ export interface AnswerPayload {
   question?: string;
   speaker?: number;
   detected?: boolean;
+  responseKind?: 'question-suggestion';
+  recentSuggestions?: string[];
   fullTranscript: string;
   newSegment: string;
   forced: boolean;
@@ -217,12 +221,13 @@ export interface QuestionBatch {
   sessionId?: string;
   candidates: QuestionCandidate[];
   recentQuestion?: { id: string; text: string; context: string; followingSpeech: string };
+  questionSuggestions?: { mode: 'invitations' | 'openings'; recentDrafts: string[] };
 }
 
 export interface QuestionJudgment {
   id: string;
   probability: number;
-  kind?: 'clarification';
+  kind?: 'clarification' | 'question-suggestion';
 }
 
 // ---- Profiles (validated shape; schema lives in profile-schema.ts) ----
@@ -235,6 +240,12 @@ export interface Profile {
   description: string;
   icon: string;
   builtin?: boolean;
+  /** Opt-in per course; never speaks or sends a question for the user. */
+  questionSuggestions?: 'off' | 'invitations' | 'openings';
+  /** General mode admits everyday questions and indirect requests. */
+  questionDetection?: { mode: 'classroom' | 'general' };
+  /** False prohibits session archival, including late answers after switching profiles. */
+  sessions?: { autoSave: boolean };
   llm?: { model?: string; maxTokens?: number; temperature?: number };
   prompt: {
     system: string;
@@ -303,6 +314,7 @@ export type SessionEvent =
       question?: string;
       expandedFrom?: string;
       refinedFrom?: string;
+      responseKind?: 'question-suggestion';
       /** Local wall-clock metrics; no additional model or analytics request. */
       timing?: { provider: string; prepareMs: number; firstTextMs: number | null; completeMs: number };
     };

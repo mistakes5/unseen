@@ -27,6 +27,12 @@ function codexExecutable(): string {
   return ['/opt/homebrew/bin/codex', '/usr/local/bin/codex'].find(existsSync) ?? 'codex';
 }
 
+// macOS GUI apps often lack Homebrew in PATH. The Codex launcher uses
+// `#!/usr/bin/env node`, so both login checks and answer turns need Node there.
+function codexEnvironment(): NodeJS.ProcessEnv {
+  return { ...process.env, PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(':') };
+}
+
 /** Run each answer as an isolated, tool-free, ephemeral CLI turn. Auth stays in Codex. */
 export function codexArgs(req: LlmRequest, instructionsFile?: string): string[] {
   return [
@@ -67,7 +73,7 @@ export const codexProvider: LlmProvider = {
   ]; },
   async verify() {
     try {
-      const { stdout, stderr } = await execFileAsync(codexExecutable(), ['login', 'status'], { timeout: 8000 });
+      const { stdout, stderr } = await execFileAsync(codexExecutable(), ['login', 'status'], { timeout: 8000, env: codexEnvironment() });
       return /Logged in/i.test(stdout + stderr)
         ? { ok: true, message: 'Codex is logged in. Uses your CLI account and its usage limits.' }
         : { ok: false, message: 'Run codex login in Terminal first.' };
@@ -97,7 +103,7 @@ export const codexProvider: LlmProvider = {
       ].join('\n\n'), { mode: 0o600 });
       ctx.signal.throwIfAborted();
       child = spawn(codexExecutable(), codexArgs(req, instructionsFile), {
-        cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+        cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: codexEnvironment(),
       });
       const processResult = new Promise<{ code: number | null; error?: Error }>((resolve) => {
         child!.once('error', (error) => resolve({ code: null, error }));

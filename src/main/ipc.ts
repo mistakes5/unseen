@@ -1,7 +1,8 @@
-import { app, ipcMain, dialog } from 'electron';
+import { app, ipcMain, dialog, powerMonitor } from 'electron';
 import { IPC } from '../shared/ipc-contract';
 import type { AnswerPayload, DeepPartial, Settings, QuestionBatch } from '../shared/types';
 import { CLARIFICATION_THRESHOLD } from '../shared/classroom-context';
+import { SUGGESTION_THRESHOLD } from '../shared/question-suggestions';
 import { settings } from './services/settings';
 import { setSecret, secretsStatus } from './services/secrets';
 import {
@@ -45,12 +46,18 @@ import type { Namespace } from '../shared/types';
 import { meetilyReader } from './services/stt/meetily';
 import { stopLocalTranscription } from './services/stt/whisperlivekit';
 import { withOverlayReplay } from './services/overlay-replay';
-import { detectQuestions, QUESTION_PROMPT_VERSION } from './services/question-detection';
+import { detectQuestions, QUESTION_PROMPT_VERSION, GENERAL_QUESTION_PROMPT_VERSION } from './services/question-detection';
 import { getSecret } from './services/secrets';
+import { ListeningLimit } from './services/listening-limit';
 
 const detections = new Set<AbortController>();
+const listeningLimits = new Map<number, ListeningLimit>();
+function requireListeningTime(senderId: number): void {
+  if (listeningLimits.get(senderId)?.check() === false) throw new Error('Stopped automatically after 3 hours. Press Start for a new session.');
+}
 
 export function registerIpc(): void {
+  powerMonitor.on('resume', () => { for (const limit of listeningLimits.values()) limit.check(); });
   ipcMain.handle(IPC.settingsGet, () => settings().get());
   ipcMain.handle(IPC.settingsSet, (_e, patch: DeepPartial<Settings>) => {
     if (patch.stt?.provider === 'meetily') stopLocalTranscription();
@@ -93,11 +100,15 @@ export function registerIpc(): void {
     return getLlmProvider(providerId).verify(providerContext(providerId, cfg));
   });
 
-  ipcMain.handle(IPC.sttDescriptor, async () => {
+  ipcMain.handle(IPC.sttDescriptor, async event => {
+    requireListeningTime(event.sender.id);
     const cfg = settings().get();
-    return withOverlayReplay(await getSttProvider(cfg.stt.provider).descriptor(cfg));
+    const descriptor = await withOverlayReplay(await getSttProvider(cfg.stt.provider).descriptor(cfg));
+    requireListeningTime(event.sender.id);
+    return descriptor;
   });
   ipcMain.handle(IPC.meetilyPoll, (_event, reset: boolean) => {
+    requireListeningTime(_event.sender.id);
     if (settings().get().stt.provider !== 'meetily') throw new Error('Meetily transcript mode is not selected');
     return meetilyReader.poll(reset === true);
   });
@@ -114,29 +125,39 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle(IPC.answerStart, (event, payload: AnswerPayload) => {
+    if (!payload.forced) requireListeningTime(event.sender.id);
     // Fire and forget; results stream back as events to the caller.
     void runAnswer(event.sender, payload);
     return { ok: true };
   });
   ipcMain.handle(IPC.answerCancel, () => cancelAnswer());
   ipcMain.handle(IPC.questionsDetect, async (_e, batch: QuestionBatch) => {
+    requireListeningTime(_e.sender.id);
     if (batch.profileId !== settings().get().activeProfile) throw new Error('Class changed');
+    const suggestionMode = getActiveProfile().questionSuggestions;
+    batch = { ...batch, questionSuggestions: batch.questionSuggestions && suggestionMode && suggestionMode !== 'off'
+      ? { ...batch.questionSuggestions, mode: suggestionMode } : undefined };
     const key = getSecret('typesafe');
     if (!key) throw new Error('Add your TypeSafe key in Settings → Providers.');
     const controller = new AbortController(); detections.add(controller);
     const began = Date.now();
     const threshold = settings().get().questionDetection.threshold;
     try {
-      const results = await detectQuestions(batch, key, controller.signal);
+      const mode = getActiveProfile().questionDetection?.mode ?? 'classroom';
+      const results = await detectQuestions(batch, key, controller.signal, fetch, mode);
       if (controller.signal.aborted || batch.profileId !== settings().get().activeProfile) throw new Error('Question check cancelled');
       // Only real class sessions are archived; ad-hoc diagnostic IPC calls are not.
-      if (batch.sessionId) for (const result of results) recordEvent({
+      if (batch.sessionId) for (const result of results) {
+        const cutoff = result.kind === 'clarification' ? CLARIFICATION_THRESHOLD
+          : result.kind === 'question-suggestion' ? SUGGESTION_THRESHOLD : threshold;
+        recordEvent({
         t: Date.now(), type: 'question-check', questionId: result.id, profileId: batch.profileId,
-        text: result.kind === 'clarification' ? `[clarification] ${batch.recentQuestion!.followingSpeech}` : batch.candidates.find(c => c.id === result.id)!.text, probability: result.probability,
-        threshold: result.kind === 'clarification' ? CLARIFICATION_THRESHOLD : threshold,
-        passed: result.probability >= (result.kind === 'clarification' ? CLARIFICATION_THRESHOLD : threshold), elapsedMs: Date.now() - began,
-        promptVersion: QUESTION_PROMPT_VERSION,
+        text: result.kind === 'clarification' ? `[clarification] ${batch.recentQuestion!.followingSpeech}`
+          : `${result.kind === 'question-suggestion' ? '[question suggestion] ' : ''}${batch.candidates.find(c => c.id === result.id)!.text}`, probability: result.probability,
+        threshold: cutoff, passed: result.probability >= cutoff, elapsedMs: Date.now() - began,
+        promptVersion: mode === 'general' ? GENERAL_QUESTION_PROMPT_VERSION : QUESTION_PROMPT_VERSION,
       }, batch.sessionId);
+      }
       return results;
     }
     finally { detections.delete(controller); }
@@ -231,7 +252,27 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.quit, () => app.quit());
 
   // Sessions: transcript finals arrive fire-and-forget from the overlay.
-  ipcMain.handle(IPC.sessionBegin, () => beginSession());
+  ipcMain.handle(IPC.sessionBegin, (event, token: number) => {
+    if (!Number.isSafeInteger(token)) throw new Error('Invalid listening session token');
+    const id = beginSession();
+    let limit = listeningLimits.get(event.sender.id);
+    if (!limit) {
+      limit = new ListeningLimit(expiredToken => {
+        cancelAnswer();
+        for (const c of detections) c.abort();
+        detections.clear();
+        if (!event.sender.isDestroyed()) event.sender.send(IPC.evListeningExpired, expiredToken);
+      });
+      listeningLimits.set(event.sender.id, limit);
+      event.sender.once('destroyed', () => {
+        listeningLimits.get(event.sender.id)?.stop();
+        listeningLimits.delete(event.sender.id);
+      });
+    }
+    limit.start(token);
+    return id;
+  });
+  ipcMain.on(IPC.sessionEnd, (event, token: number) => listeningLimits.get(event.sender.id)?.stop(token));
   ipcMain.on(IPC.sessionSpeaker, (_e, ev: { speaker: number | null; profileId: string; sessionId: string }) => {
     recordEvent({ t: Date.now(), type: 'speaker-label', label: 'Professor', speaker: ev.speaker, profileId: ev.profileId }, ev.sessionId);
   });

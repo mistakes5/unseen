@@ -88,6 +88,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
         <KeyField providerId={llmId} hasKey={!!keyStatus[llmId]} onSaved={setKeyStatus} />
       )}
       {llmId === 'codex' && <div className="hint">Uses your existing Codex CLI login and account limits; no separate OpenAI API key. Reasoning: {settings.llm.reasoningEffort ?? 'low'}. Fast mode is enabled only for this app’s isolated CLI calls (increased credit usage); global Codex settings are unchanged. Model access depends on your account. Answers appear when each CLI message completes. Test connection checks login, not remaining quota.</div>}
+      {llmId === 'omp-codex' && <div className="hint">Uses your OMP Codex sign-in and account limits; no separate API key. GPT-6 Luna uses low reasoning and Fast processing. Answers appear as text arrives. Test connection checks model availability, not remaining quota.</div>}
 
       {llmId === 'ollama' && (
         <div className="field">
@@ -124,7 +125,7 @@ export function ProvidersTab({ settings, update }: TabProps): React.JSX.Element 
         value={settings.llm.model}
         models={answerModelChoices(llmId, models)}
         allowCustom={!ANSWER_MODEL_DEFAULTS[llmId]}
-        onChange={model => set({ llm: { model, ...(llmId === 'codex' && model === 'gpt-6-luna' ? { reasoningEffort: 'low' as const } : {}) } })}
+        onChange={model => set({ llm: { model, ...((llmId === 'codex' || llmId === 'omp-codex') && model === 'gpt-6-luna' ? { reasoningEffort: 'low' as const } : {}) } })}
         onRefresh={() => void window.unseen.modelsList(llmId).then(setModels)}
       />
 

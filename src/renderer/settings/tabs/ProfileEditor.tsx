@@ -104,6 +104,23 @@ export function ProfileEditor({
       )}
 
       <div className="row" style={{ maxWidth: 620 }}>
+        <div className="field">
+          <label>Question detection scope (Jev)</label>
+          <select value={p.questionDetection?.mode ?? 'classroom'} onChange={e => setP({ ...p, questionDetection: { mode: e.target.value as 'classroom' | 'general' } })}>
+            <option value="classroom">Classroom participation</option>
+            <option value="general">General questions and indirect requests</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Session saving</label>
+          <select value={p.sessions?.autoSave === false ? 'off' : 'inherit'} onChange={e => setP({ ...p, sessions: e.target.value === 'off' ? { autoSave: false } : undefined })}>
+            <option value="inherit">Use app autosave setting</option>
+            <option value="off">Do not save transcripts or answers</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="row" style={{ maxWidth: 620 }}>
         <div className="field" style={{ width: 90 }}>
           <label>Icon</label>
           <input value={p.icon} onChange={(e) => setP({ ...p, icon: e.target.value })} />
@@ -130,6 +147,17 @@ export function ProfileEditor({
       </div>
 
       <h3>System prompt</h3>
+      <div className="field" style={{ maxWidth: 620 }}>
+        <label>Question drafts for this class</label>
+        <select value={p.questionSuggestions ?? 'off'}
+          onChange={e => setP({ ...p, questionSuggestions: e.target.value as Profile['questionSuggestions'] })}>
+          <option value="off">Off — answer questions only</option>
+          <option value="invitations">When invited to ask questions</option>
+          <option value="openings">Invitations and strong discussion openings</option>
+        </select>
+        <div className="hint">Requires Jev. Drafts only, never spoken automatically. At most one per minute,
+          using free answer capacity; normal answers and transcript saving stay enabled.</div>
+      </div>
       <div className="field" style={{ maxWidth: 620 }}>
         <textarea
           rows={14}

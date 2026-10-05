@@ -70,6 +70,7 @@ describe('Codex CLI provider', () => {
       { type: 'done' },
     ]);
     expect(mocks.spawn.mock.calls[0][2].cwd).toContain('classroom-codex-');
+    expect(mocks.spawn.mock.calls[0][2].env.PATH).toContain('/opt/homebrew/bin');
     expect(mocks.spawn.mock.calls[0][1].join(' ')).toContain('model_instructions_file=');
     expect(child.stdin.read().toString()).not.toContain('Answer briefly.');
   });

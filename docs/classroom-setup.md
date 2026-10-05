@@ -1,5 +1,9 @@
 # Class-specific setup: ask first, then configure
 
+Restoring an already confirmed installation is covered by
+[the reproduction guide](reproduce-installation.md). It preserves saved choices;
+the questions below apply to new or materially changed class configuration.
+
 Agents must follow the [required question gate](../AGENTS.md). Existing course
 profiles are starting examples, not universal settings or proof of enrollment.
 The app does not enforce this agent conversation in its setup UI.
@@ -59,9 +63,12 @@ Do not commit personal paths or evidence bundles. Validate profiles against
 `src/shared/profile-schema.ts`. User profiles override bundled profiles by ID.
 
 Not every setting is per-profile: inspect `src/shared/types.ts` and the settings
-service before changing anything. STT provider, Jev threshold, autosave and reasoning
-settings are app settings in this version. Do not claim changing the course dropdown
-automatically changes them. Course interpretation/clarification eligibility is also
+service before changing anything. STT provider, Jev threshold and reasoning
+settings are app settings. Profiles can prohibit archival with `sessions.autoSave: false`
+and select `questionDetection.mode: general` for everyday questions and indirect requests.
+Omitted settings retain classroom detection and the global autosave preference; a profile
+cannot override global autosave being off. These options do not change cloud providers.
+Course interpretation/clarification eligibility is also
 listed in `src/shared/course-participation.ts`; a new YAML profile alone does not add
 it to that map. Any shared-code changes require tests and should not overfit one class.
 

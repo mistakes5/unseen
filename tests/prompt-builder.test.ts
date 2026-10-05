@@ -31,6 +31,37 @@ const baseOpts = {
 };
 
 describe('buildAnswerRequest', () => {
+  it('preserves the original referent separately from newer speech and includes earlier evidence for ordinary answers', () => {
+    const req = buildAnswerRequest({ ...baseOpts, detected: true,
+      questionContext: 'A college is admitting more students. Why?',
+      fullTranscript: 'Later: should banks change interest rates?',
+      earlierLecture: 'The lecture discussed capacity and institutional incentives.' });
+    const text = req.messages[0].content;
+    expect(text).toContain('CONTEXT CAPTURED WITH THE SELECTED QUESTION');
+    expect(text).toContain('A college is admitting more students');
+    expect(text).toContain('Later: should banks');
+    expect(text).toContain('earlierLectureSpeech');
+    expect(text).toContain('capacity and institutional incentives');
+    expect(req.system.map(s => s.text).join('')).not.toContain('college is admitting');
+  });
+  it('drafts one grounded question with a separate explanation, leaving ordinary answers unchanged', () => {
+    const req = buildAnswerRequest({ ...baseOpts, responseKind: 'question-suggestion', detected: true,
+      recentSuggestions: ['A previous question'], earlierLecture: 'Previously explained sovereignty.', knowledge: [{ name: 'Slide 3', text: 'Regional implementation.' }] });
+    expect(req.system.at(-1)!.text).toContain('Question to ask:');
+    expect(req.system.at(-1)!.text).toContain('Why it matters:');
+    expect(req.system.at(-1)!.text).toContain('already answered');
+    expect(req.system.at(-1)!.text).toContain('directed to the professor');
+    expect(req.system.at(-1)!.text).toContain('simple wording does not mean');
+    expect(req.system.at(-1)!.text).toContain('one clear central question');
+    expect(req.messages[0].content).toContain('A previous question');
+    expect(req.messages[0].content).toContain('Regional implementation.');
+    expect(req.messages[0].content).toContain('Previously explained sovereignty.');
+    expect(req.system.map(s => s.text).join('')).not.toContain('Previously explained sovereignty.');
+    expect(req.messages[0].content).not.toContain('ANSWER THE SELECTED PARTICIPATION');
+    expect(req.model).toBe(settings.llm.model);
+    expect(buildAnswerRequest(baseOpts).system).toHaveLength(1);
+    expect(buildAnswerRequest(baseOpts).system[0].text).not.toContain('simple thinking');
+  });
   it('renders the user speaker and drops the knowledge section without files', () => {
     const req = buildAnswerRequest(baseOpts);
     expect(req.system[0].text).toContain('You help [S0].');
@@ -94,4 +125,12 @@ describe('buildAnswerRequest', () => {
     });
     expect(req.system[0].text).toContain('Always answer in German.');
   });
+});
+
+it('answers general detected requests without imposing classroom logistics exclusions', () => {
+  const request = buildAnswerRequest({ ...baseOpts, profile: { ...profile, id: 'demo', questionDetection: { mode: 'general' } }, detected: true });
+  const text = JSON.stringify(request);
+  expect(text).toContain('Everyday and logistical requests count');
+  expect(text).not.toContain('demonstrate the reading');
+  expect(text).not.toContain('CONTEXT-SENSITIVE CLASSROOM ANSWER');
 });

@@ -9,6 +9,29 @@ const payload: AnswerPayload = {
 };
 
 describe('Jev question detection contract', () => {
+  it('batches opt-in opening and value judgments, requiring both and bounding previous drafts', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      candidate_0: { type: 'noul', noul: 0.1 }, question_opening: { type: 'noul', noul: 0.95 }, question_value: { type: 'noul', noul: 0.8 },
+    } })));
+    const result = await detectQuestions({ profileId: 'federalism', candidates: [
+      { id: 'q', text: 'Common standards can conflict with regional choices.', speaker: 0, context: 'Federalism' },
+    ], questionSuggestions: { mode: 'openings', recentDrafts: Array(8).fill('x'.repeat(900)) } }, 'test-key', new AbortController().signal, fetcher);
+    expect(result).toEqual([{ id: 'q', probability: 0.1 }, { id: 'q', probability: 0.8, kind: 'question-suggestion' }]);
+    expect(fetcher).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.state.suggestion.recentDrafts).toHaveLength(5);
+    expect(body.state.suggestion.recentDrafts[0]).toHaveLength(700);
+    expect(body.questions.question_opening.criteria.false).toContain('ANSWER');
+  });
+  it('ignores malformed optional draft judgments without losing normal answers', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      candidate_0: { type: 'noul', noul: 0.9 }, question_opening: { type: 'noul', noul: 0.95 }, question_value: { type: 'noul', noul: 5 },
+    } })));
+    expect(await detectQuestions({ profileId: 'federalism', candidates: [
+      { id: 'q', text: 'Any questions?', speaker: 0, context: 'Federalism' },
+    ], questionSuggestions: { mode: 'invitations', recentDrafts: [] } }, 'test-key', new AbortController().signal, fetcher))
+      .toEqual([{ id: 'q', probability: 0.9 }]);
+  });
   it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of-ai'])('adds isolated per-candidate focus for %s without extra model calls', async profileId => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
       candidate_0: { type: 'noul', noul: 0.9 }, candidate_1: { type: 'noul', noul: 0.1 },
@@ -119,5 +142,24 @@ describe('Jev question detection contract', () => {
     expect(body.state.candidates[0].text).toHaveLength(2500);
     expect(body.state.candidates[0].precedingDiscussion).toHaveLength(7000);
     expect(body.state.candidates[1].precedingDiscussion).toBe('');
+  });
+});
+
+describe('general conversation detection', () => {
+  it('uses general scope for batched questions, without course assumptions', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: { candidate_0: { type: 'noul', noul: 0.9 } } })));
+    await detectQuestions({ profileId: 'demo', candidates: [{ id: 'a', text: 'I need help getting this printer connected.', speaker: 0, context: 'Setting up a printer.' }] }, 'test', new AbortController().signal, fetcher, 'general');
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.questions.candidate_0.instructions).toContain('indirect requests');
+    expect(body.questions.candidate_0.criteria.false).toContain('ordinary statement');
+    expect(body.questions.candidate_0.criteria.true).toContain('No lesson');
+    expect(body.state).not.toHaveProperty('courseGuidance');
+  });
+  it('uses the same scope through the single-question fallback', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: { needs_response: { type: 'noul', noul: 0.9 } } })));
+    await detectQuestion({ ...payload, profileId: 'demo', newSegment: 'What time did we agree to meet?' }, 'test', new AbortController().signal, fetcher, 'general');
+    const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+    expect(body.questions.needs_response.instructions).toContain('logistical questions');
+    expect(body.questions.needs_response.criteria.false).toContain('unfinished prompt');
   });
 });

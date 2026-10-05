@@ -1,0 +1,33 @@
+{
+  "capturedAt": "2026-10-05T18:01:44.906Z",
+  "platform": "darwin-arm64",
+  "node": "26.6.0",
+  "npm": "11.18.0",
+  "electron": "42.4.0",
+  "scope": "Compiled application payload and built-in profiles; excludes signing, packaging metadata, credentials and private user data.",
+  "files": {
+    "out/main/index.js": "d0506039ef328fb96ab4dfa96f009a070fbe1bdc1651c955e1e23a01d645ff1f",
+    "out/main/silent-replay-Bt803Kk4.js": "e5406f23b48b51cdcd5f816ff05040f03e9118922a2f1953a9368190c9564b47",
+    "out/preload/index.js": "b2f1fdc9d477d6d8afb7e4ea8f0f18f12707fb6d285ebf4b61b1e15be0ce0ada",
+    "out/renderer/assets/client-BlE56gnY.js": "f3fa035728cb93ba23a60782e3668b0d14dc4d68d4a8a79bbe67d2028d20cddd",
+    "out/renderer/assets/dictation-DppOX4j2.js": "b9acaea20b6a7df10b34e8a95d69a2c0b85e3b1807004f920951d88768d62edb",
+    "out/renderer/assets/dictation-pS0RLQ9H.css": "24a6646b07902e70687b494d4f9a16aa6807a2a9bf26eb9ec73f469ff6aba258",
+    "out/renderer/assets/index-Dz0BN_t8.js": "7e0669ee7d2235ba8323047fa1badad23660b50a673e65b82d4a5037d4d85b39",
+    "out/renderer/assets/overlay-Cr6mGlGm.css": "1ff7b1abaf2fa73dc2ff697c019cd5114a9fb45a5338c989a7be89b323683078",
+    "out/renderer/assets/overlay-fGX98FU4.js": "24d2f6996751137834ccf75fa07a842fe71319d1cb178f9ccbe457d99f43706f",
+    "out/renderer/assets/settings-D9f4kIDu.css": "db36488531253648ade1f691580726030c438dfc1f706acd1794207d3230b70c",
+    "out/renderer/assets/settings-DL2dmg0V.js": "a9f0c60581af15d43852c0a81910586e9561f3fc884d3f31805f282420322963",
+    "out/renderer/dictation/index.html": "8841127f07b95690eb3d53a7c9745aeaf2e4ac097d000a02aef11529d33ad03e",
+    "out/renderer/overlay/index.html": "85da22727ee0f2bc1065e52d4f441b2d9b5ff57ce53ecbfaa429581b2c558c9b",
+    "out/renderer/settings/index.html": "4c491591cf43e6b52d1af39ee47fd59deeba5350fcfdbd338fd69d00fdf9d370",
+    "profiles/canadian-politics.yaml": "f2a100ac15574e9e72d72d9d3cca22657e6c51300fe18c17e4ff290cdeba2214",
+    "profiles/federalism.yaml": "ab7dbd70c7b2003753ad9c8b1a25a7f8b24164289ee87cc7ac87a72c5aa41b0f",
+    "profiles/political-identities.yaml": "0febc058f5695b19b0034b1832bcb7fcae1211987e77a19c8ff15e148cfb5cfc",
+    "profiles/politics-of-ai.yaml": "ab64b2b360c507458cc43c1bdb7bf774b50af5c198397a09c99c41a848927dde"
+  },
+  "runtimeDependencies": {
+    "files": 5085,
+    "sha256": "daa024ed7a96b76edf32847dfbe2084456bb73d3833c6886398f89d81f34c924",
+    "algorithm": "SHA-256 of JSON object with sorted ASAR node_modules paths and per-file SHA-256 values"
+  }
+}

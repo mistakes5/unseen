@@ -8,6 +8,7 @@ import { SttClient } from './stt/client';
 import { useOverlayStore } from './store';
 import { AnswerQueue, questionSpans } from './question-queue';
 import { detectionDelay } from './detection-timing';
+import { SUGGESTION_COOLDOWN_MS, SUGGESTION_THRESHOLD } from '../../shared/question-suggestions';
 
 const transcript = new TranscriptStore();
 let client: SttClient | null = null;
@@ -15,17 +16,22 @@ let listening = false;
 let accepting = false; // file EOF may stop audio while the answer queue drains
 let listeningLabel = 'listening';
 let sessionId = '';
+let listenToken = 0;
 let epoch = 0;
 let seq = 0;
 let detecting = false;
 let candidates: (QuestionCandidate & { receivedAt: number })[] = [];
 let detectionTimer: ReturnType<typeof setTimeout> | null = null;
 const payloads = new Map<string, AnswerPayload>();
+// Retain failed request context until the card is retried or the session is cleared.
+const failedAnswers = new Map<string, AnswerPayload>();
+const retryRequests = new Set<string>();
 const expansions = new Map<string, string>();
 const refinements = new Map<string, { parent: string; text: string }>();
 const pendingRefinements = new Map<string, string>();
 let recent: (NonNullable<QuestionBatch['recentQuestion']> & { startedAt: number; used: boolean }) | null = null;
 const seen = new Map<string, number>();
+let lastSuggestionAt = -Infinity;
 function store() { return useOverlayStore.getState(); }
 function pushTranscript(): void { store().setTranscript(transcript.turns(), transcript.interim); }
 function status(): void {
@@ -50,7 +56,7 @@ const queue = new AnswerQueue(q => {
   else {
     // Include speech that arrived while Jev or another answer was running.
     // Keep the selected question fixed, even when this includes a later question.
-    payload.fullTranscript = transcript.fullTranscript();
+    if (!retryRequests.has(q.id)) payload.fullTranscript = transcript.fullTranscript();
     if (recent?.id === q.id) { recent.context = payload.fullTranscript; recent.followingSpeech = ''; }
     store().setAnswerPhase(q.id, 'answering');
   }
@@ -80,7 +86,12 @@ function settle(id: string, opts: { error?: string; usage?: Usage | null }): voi
   }
   const text = store().answers.find(a => a.id === id)?.text.trim() ?? '';
   const skipped = !opts.error && (!text || text.toUpperCase() === 'SKIP');
-  store().finishAnswer(id, opts);
+  if (opts.error) {
+    const payload = payloads.get(id);
+    if (payload) failedAnswers.set(id, { ...payload });
+  }
+  store().finishAnswer(id, { ...opts, canRetry: !!opts.error && failedAnswers.has(id) });
+  retryRequests.delete(id);
   if (skipped) {
     store().setAnswerPhase(id, 'skipped');
     recordStatus(id, 'skipped', 'The answer model skipped this question.');
@@ -105,7 +116,7 @@ function refineAnswer(parentId: string, clarification: string): void {
   queue.enqueue({ id, text: answer.question ?? '', speaker: answer.speaker ?? 0, context: '', priority: -1 });
 }
 
-function enqueue(q: QuestionCandidate, forced = false): void {
+function enqueue(q: QuestionCandidate, forced = false, suggestion = false): void {
   const profile = store().activeProfile;
   if (!profile || !accepting) return;
   const key = q.text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -113,20 +124,28 @@ function enqueue(q: QuestionCandidate, forced = false): void {
   for (const [k, t] of seen) if (now - t > 30_000) seen.delete(k);
   if (!forced && seen.has(key)) return;
   seen.set(key, now);
-  q.priority = q.speaker === store().professorSpeaker ? 1 : 0;
+  q.priority = suggestion ? -1 : q.speaker === store().professorSpeaker ? 1 : 0;
   payloads.set(q.id, { requestId: q.id, profileId: profile.id, sessionId,
     question: q.text, speaker: q.speaker, fullTranscript: q.context,
-    newSegment: `[S${q.speaker}] ${q.text}`, forced, detected: true, codeMode: false, userSpeaker: 0 });
-  if (!forced && isParticipationCourse(profile.id)
+    questionContext: q.priorContext !== undefined ? `${q.priorContext}\n[S${q.speaker}] ${q.text}` : q.context,
+    newSegment: `[S${q.speaker}] ${q.text}`, forced, detected: true, codeMode: false, userSpeaker: 0,
+    ...(suggestion ? { responseKind: 'question-suggestion' as const, recentSuggestions: recentSuggestionDrafts() } : {}) });
+  if (suggestion) lastSuggestionAt = now;
+  if (!suggestion && !forced && isParticipationCourse(profile.id)
     && (!recent || Number(q.id.split('-').at(-1)) > Number(recent.id.split('-').at(-1)))) {
     recent = { id: q.id, text: q.text, context: q.context, followingSpeech: '', startedAt: now, used: false };
   }
   const preceding = q.priorContext?.replace(/\[S\d+\]\s*/g, '').trim();
   store().beginAnswer(q.id, q.text, q.speaker, preceding
-    ? `${preceding.length > 240 ? '…' : ''}${preceding.slice(-240)}` : undefined);
-  window.unseen.sessionRecordQuestion({ text: q.text, speaker: q.speaker,
+    ? `${preceding.length > 240 ? '…' : ''}${preceding.slice(-240)}` : undefined, suggestion ? 'question-suggestion' : undefined);
+  window.unseen.sessionRecordQuestion({ text: suggestion ? `[question suggestion opening] ${q.text}` : q.text, speaker: q.speaker,
     profileId: profile.id, sessionId, questionId: q.id });
   queue.enqueue(q); status();
+}
+
+function recentSuggestionDrafts(): string[] {
+  return store().answers.filter(a => a.responseKind === 'question-suggestion' && a.phase === 'done')
+    .slice(0, 5).reverse().map(a => a.text.slice(0, 700));
 }
 
 function scheduleDetection(): void {
@@ -143,12 +162,16 @@ async function detectPending(): Promise<void> {
   const recentQuestion = recent && !recent.used && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS
     && recent.followingSpeech.trim() ? { id: recent.id, text: recent.text, context: recent.context, followingSpeech: recent.followingSpeech } : undefined;
   detecting = true; status();
+  const questionSuggestions = profile.questionSuggestions && profile.questionSuggestions !== 'off'
+    && Date.now() - lastSuggestionAt >= SUGGESTION_COOLDOWN_MS && queue.running < 2 && queue.pending === 0
+    ? { mode: profile.questionSuggestions, recentDrafts: recentSuggestionDrafts() } : undefined;
   try {
     const results: QuestionJudgment[] = store().settings?.questionDetection.provider === 'jev'
-      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch, recentQuestion })
+      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch, recentQuestion, questionSuggestions })
       : batch.map(c => ({ id: c.id, probability: evaluateTriggers(profile.triggers, { newText: c.text, recentText: c.context }).fire ? 1 : 0 }));
     if (generation !== epoch || !accepting) return;
     const clarification = results.find(r => r.kind === 'clarification' && r.id === recentQuestion?.id);
+    useOverlayStore.setState({ detectionError: null });
     if (recentQuestion && recent?.id === recentQuestion.id && !recent.used
       && clarification && clarification.probability >= CLARIFICATION_THRESHOLD) {
       recent.used = true; // at most one automatic update per original question
@@ -161,16 +184,33 @@ async function detectPending(): Promise<void> {
     store().addDetectionChecks(batch.map(c => ({ id: c.id, text: c.text,
       probability: results.find(r => r.id === c.id)!.probability, threshold,
       passed: results.find(r => r.id === c.id)!.probability >= threshold })));
-    const accepted = batch.filter(c => results.some(r => !r.kind && r.id === c.id && r.probability >= threshold));
+    const suggested = questionSuggestions && results.find(r => r.kind === 'question-suggestion' && r.probability >= SUGGESTION_THRESHOLD);
+    const suggestionCandidate = suggested && batch.find(c => c.id === suggested.id);
+    const normal = batch.filter(c => results.some(r => !r.kind && r.id === c.id && r.probability >= threshold));
+    // Never trade a regular answer slot for a speculative question. An explicit
+    // invitation can route to a draft instead of producing two cards for one span.
+    const canSuggest = suggestionCandidate && normal.every(c => c.id === suggestionCandidate.id)
+      && Date.now() - lastSuggestionAt >= SUGGESTION_COOLDOWN_MS
+      && Date.now() - suggestionCandidate.receivedAt <= 12_000 && !candidates.length
+      && queue.running === 0 && queue.pending === 0;
+    const accepted = canSuggest ? normal.filter(c => c.id !== suggestionCandidate.id) : normal;
     // Professor candidates take available slots first, while cards retain speech order.
     accepted.sort((a, b) => Number(b.speaker === store().professorSpeaker) - Number(a.speaker === store().professorSpeaker));
     for (const q of accepted) enqueue(q);
+    if (canSuggest) enqueue(suggestionCandidate, false, true);
   } catch (error) {
     if (generation !== epoch || !accepting) return;
-    // Preserve failures visibly instead of silently losing a batch. No paid fallback.
+    // Failed checks are not detected questions. Preserve gaps without creating
+    // answer cards for every unchecked statement. Never switch providers here.
+    const message = /HTTP (401|403)|TypeSafe key/i.test(String(error))
+      ? 'Jev access failed — check the TypeSafe key in Settings → Providers.'
+      : /HTTP (408|429|500|502|503|504|529)|Timeout|timed out|network|fetch failed/i.test(String(error))
+        ? 'Jev is temporarily unavailable. Automatic question detection may miss speech.'
+        : 'Question detection failed. Automatic answers may miss speech.';
+    useOverlayStore.setState(s => ({ detectionError: message, uncheckedSegments: s.uncheckedSegments + batch.length }));
     for (const q of batch) {
-      store().beginAnswer(q.id, q.text, q.speaker);
-      store().finishAnswer(q.id, { error: `Question check failed: ${String(error)}. Use Ask now to retry the latest speech.` });
+      window.unseen.sessionRecordStatus({ questionId: q.id, profileId: profile.id, sessionId,
+        status: 'error', text: `Detection unavailable; segment was not classified: ${q.text}. ${message}` });
     }
   } finally {
     if (generation === epoch) { detecting = false; status(); scheduleDetection(); }
@@ -181,6 +221,7 @@ function cancelWork(): void {
   epoch++; accepting = false;
   if (detectionTimer) clearTimeout(detectionTimer);
   detectionTimer = null; detecting = false; candidates = [];
+  useOverlayStore.setState({ detectionError: null });
   void window.unseen.questionsCancel?.();
   void window.unseen.answerCancel();
   for (const q of queue.clear()) {
@@ -191,7 +232,25 @@ function cancelWork(): void {
     else if (parent) store().patchExpansion(parent, { phase: 'error', error: 'Expansion cancelled. You can retry.' });
     else { store().finishAnswer(q.id, {}); store().setAnswerPhase(q.id, 'cancelled'); }
   }
+  retryRequests.clear();
   payloads.clear(); expansions.clear(); refinements.clear(); pendingRefinements.clear(); recent = null;
+}
+
+/** Retry the captured question, never the latest speech. A fresh ID rejects late events. */
+export function retryAnswer(answerId: string | number): void {
+  const answer = store().answers.find(a => a.id === answerId);
+  const original = failedAnswers.get(String(answerId));
+  if (answer?.phase !== 'error' || !original || original.profileId !== store().activeProfile?.id) return;
+  const id = `${epoch}-retry-${++seq}`;
+  failedAnswers.delete(String(answerId));
+  payloads.set(id, { ...original, requestId: id });
+  retryRequests.add(id);
+  store().restartAnswer(answerId, id);
+  window.unseen.sessionRecordQuestion({ text: original.question ?? original.newSegment,
+    speaker: original.speaker ?? 0, profileId: original.profileId!, sessionId: original.sessionId ?? '', questionId: id });
+  queue.enqueue({ id, text: original.question ?? original.newSegment, speaker: original.speaker ?? 0,
+    context: original.fullTranscript, priority: -1 });
+  status();
 }
 
 export function expandAnswer(answerId: string | number): void {
@@ -234,31 +293,40 @@ export function togglePause(): boolean {
   status(); return paused;
 }
 export function isListening(): boolean { return listening; }
+function endListening(): void {
+  listening = false;
+  client?.stop();
+  window.unseen.sessionEnd?.(listenToken);
+  cancelWork();
+}
 export function resetClassroomSession(): void {
-  if (listening) { listening = false; client?.stop(); }
-  cancelWork(); sessionId = ''; seen.clear();
+  if (listening) endListening();
+  cancelWork(); failedAnswers.clear(); sessionId = ''; seen.clear(); lastSuggestionAt = -Infinity;
   transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0;
-  useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, professorSpeaker: null, detectionChecks: [], detectionCount: 0 });
+  useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, professorSpeaker: null, detectionChecks: [], detectionCount: 0, detectionError: null, uncheckedSegments: 0 });
   pushTranscript(); store().setStatus('idle', 'course changed — press Start');
 }
 
 export function toggleListening(): boolean {
   if (listening) {
-    listening = false; client?.stop(); cancelWork(); status();
+    endListening(); status();
   } else {
     cancelWork();
+    failedAnswers.clear();
     sessionId = '';
-    listening = true; accepting = true; seen.clear();
-    useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, sessionError: null, detectionChecks: [], detectionCount: 0 });
+    listening = true; accepting = true; seen.clear(); lastSuggestionAt = -Infinity;
+    useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, sessionError: null, detectionChecks: [], detectionCount: 0, detectionError: null, uncheckedSegments: 0 });
     transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0; pushTranscript();
     setProfessorSpeaker(null);
     const generation = epoch;
+    listenToken = generation;
     store().setStatus('idle', 'starting session');
-    void window.unseen.sessionBegin().then(id => {
+    void window.unseen.sessionBegin(listenToken).then(id => {
       if (!listening || generation !== epoch) return;
       sessionId = id; return client?.start();
     }).catch(error => {
       if (generation !== epoch) return;
+      window.unseen.sessionEnd?.(listenToken);
       listening = false; accepting = false;
       store().setStatus('error', `Could not start saved session: ${String(error)}`);
     });
@@ -288,7 +356,11 @@ export async function initController(): Promise<void> {
       if (listening) { client?.stop(); await client?.start(); }
     }
   });
-  window.unseen.onProfilesChanged(list => store().setProfiles(list));
+  window.unseen.onProfilesChanged(async list => {
+    store().setProfiles(list);
+    const profile = await window.unseen.profilesGetActive();
+    if (profile.id === store().activeProfile?.id) store().setActiveProfile(profile);
+  });
   window.unseen.onAnswerDelta(({ requestId, text }) => {
     if (!queue.has(requestId)) return;
     const parent = expansions.get(requestId);
@@ -304,6 +376,11 @@ export async function initController(): Promise<void> {
   window.unseen.onSessionError(error => useOverlayStore.setState({ sessionError: error }));
   window.unseen.onForceAnswer(() => askNow());
   window.unseen.onTogglePause(() => { togglePause(); });
+  window.unseen.onListeningExpired(token => {
+    if (!listening || token !== listenToken) return;
+    endListening();
+    store().setStatus('idle', 'Stopped automatically after 3 hours — press Start for a new session');
+  });
   client = new SttClient({
     onReset: () => {
       cancelWork(); accepting = listening;
@@ -313,8 +390,9 @@ export async function initController(): Promise<void> {
     getDescriptor: () => window.unseen.sttDescriptor(),
     getMicDeviceId: () => store().settings?.stt.micDeviceId ?? 'default',
     onStatus: s => {
+      if (!listening) return; // Ignore late connection failures after a stop/deadline.
       switch (s.state) {
-        case 'complete': listening = false; listeningLabel = s.message; status(); break;
+        case 'complete': listening = false; window.unseen.sessionEnd?.(listenToken); listeningLabel = s.message; status(); break;
         case 'following': listeningLabel = s.message; status(); break;
         case 'connecting': setProfessorSpeaker(null); store().setStatus('idle', 'connecting'); break;
         case 'live': listeningLabel = `listening — ${store().settings?.stt.provider ?? 'standalone'}`; status(); break;
@@ -324,6 +402,7 @@ export async function initController(): Promise<void> {
       }
     },
     onEvent: event => {
+      if (!listening || client?.paused) return;
       if (event.type === 'interim') { transcript.setInterim(event.text); pushTranscript(); scheduleDetection(); return; }
       const profile = store().activeProfile;
       if (!profile) return;

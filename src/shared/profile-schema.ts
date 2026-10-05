@@ -7,6 +7,9 @@ export const ProfileSchema = z.object({
   name: z.string().min(1),
   description: z.string().default(''),
   icon: z.string().default('💬'),
+  questionSuggestions: z.enum(['off', 'invitations', 'openings']).optional(),
+  questionDetection: z.object({ mode: z.enum(['classroom', 'general']) }).optional(),
+  sessions: z.object({ autoSave: z.boolean() }).optional(),
   llm: z
     .object({
       model: z.string().optional(),

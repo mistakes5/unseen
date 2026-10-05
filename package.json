@@ -23,7 +23,12 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "config:export": "node scripts/config-bundle.mjs export",
+    "config:restore": "node scripts/config-bundle.mjs restore",
+    "setup:doctor": "node scripts/doctor.mjs",
+    "verify:installation": "node scripts/verify-installation.mjs",
+    "omp:source": "node scripts/prepare-omp.mjs"
   },
   "build": {
     "appId": "local.classroom.copilot",
@@ -41,6 +46,8 @@
       "output": "release"
     },
     "mac": {
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Transcribe classroom discussion when you press Start."
       },
@@ -95,5 +102,10 @@
     "vite": "^7.3.5",
     "vitest": "^4.1.8",
     "zustand": "^5.0.14"
-  }
+  },
+  "engines": {
+    "node": "26.6.0",
+    "npm": "11.18.0"
+  },
+  "packageManager": "npm@11.18.0"
 }

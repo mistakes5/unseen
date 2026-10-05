@@ -51,6 +51,7 @@ export const IPC = {
   // sessions
   sessionFinal: 'session:final', // fire-and-forget (ipcRenderer.send)
   sessionBegin: 'session:begin',
+  sessionEnd: 'session:end',
   sessionQuestion: 'session:question',
   sessionStatus: 'session:answer-status',
   sessionSpeaker: 'session:speaker-label',
@@ -65,6 +66,7 @@ export const IPC = {
   evAnswerDone: 'answer:done',
   evAnswerError: 'answer:error',
   evSessionError: 'session:error',
+  evListeningExpired: 'session:listening-expired',
   evForceAnswer: 'hotkey:force-answer',
   evTogglePause: 'hotkey:toggle-pause',
   evSettingsChanged: 'settings:changed',

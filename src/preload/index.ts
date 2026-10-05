@@ -103,7 +103,9 @@ const api = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appInfo),
   quit: (): Promise<void> => ipcRenderer.invoke(IPC.quit),
 
-  sessionBegin: (): Promise<string> => ipcRenderer.invoke(IPC.sessionBegin),
+  sessionBegin: (listenToken: number): Promise<string> => ipcRenderer.invoke(IPC.sessionBegin, listenToken),
+  sessionEnd: (listenToken: number): void => ipcRenderer.send(IPC.sessionEnd, listenToken),
+  onListeningExpired: (cb: (listenToken: number) => void) => ipcRenderer.on(IPC.evListeningExpired, (_e, token: number) => cb(token)),
   sessionSpeaker: (ev: { speaker: number | null; profileId: string; sessionId: string }): void => ipcRenderer.send(IPC.sessionSpeaker, ev),
   sessionRecordFinal: (ev: { text: string; speaker: number; profileId: string; sessionId: string }): void =>
     ipcRenderer.send(IPC.sessionFinal, ev),

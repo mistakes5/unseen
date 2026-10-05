@@ -1,0 +1,1836 @@
+diff --git a/packages/agent/src/compaction/compaction.ts b/packages/agent/src/compaction/compaction.ts
+index 925eaab..5f74269 100644
+--- a/packages/agent/src/compaction/compaction.ts
++++ b/packages/agent/src/compaction/compaction.ts
+@@ -201,6 +201,8 @@ export interface CompactionSettings {
+ 	 */
+ 	reserveTokens?: number;
+ 	keepRecentTokens: number;
++	/** Optional media bound on the verbatim tail; never splits tool groups. */
++	keepRecentImages?: number;
+ 	autoContinue?: boolean;
+ 	remoteEnabled?: boolean;
+ 	remoteEndpoint?: string;
+@@ -522,6 +524,7 @@ export function findCutPoint(
+ 	startIndex: number,
+ 	endIndex: number,
+ 	keepRecentTokens: number,
++	keepRecentImages = Infinity,
+ ): CutPointResult {
+ 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
+ 
+@@ -533,15 +536,19 @@ export function findCutPoint(
+ 	// belonging to an assistant. Checking individual messages can either retain
+ 	// the oversized older assistant or miss its boundary and retain all history.
+ 	let accumulatedTokens = 0;
++	let accumulatedImages = 0;
+ 	let cutPointIndex = cutPoints.length - 1;
+ 	let cutIndex = cutPoints[cutPointIndex];
+ 
+ 	for (let i = endIndex - 1; i >= startIndex; i--) {
+ 		const entry = entries[i];
+ 		const message = getMessageFromEntry(entry);
+-		if (message) accumulatedTokens += tokenizer.countMessage(message);
++		if (message) {
++			accumulatedTokens += tokenizer.countMessage(message);
++			accumulatedImages += snapcompact.countMessageImages(defaultConvertToLlm([message]));
++		}
+ 		if (i !== cutPoints[cutPointIndex]) continue;
+-		if (accumulatedTokens > keepRecentTokens) break;
++		if (accumulatedTokens > keepRecentTokens || accumulatedImages > keepRecentImages) break;
+ 		cutIndex = i;
+ 		cutPointIndex--;
+ 	}
+@@ -1423,7 +1430,17 @@ export function prepareCompaction(
+ 		}
+ 	}
+ 
+-	const cutPoint = findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens);
++	const cutPoint = findCutPoint(
++		compactionEntries,
++		tokenizer,
++		0,
++		compactionEntries.length,
++		keepRecentTokens,
++		settings.keepRecentImages ??
++			(activeModel?.input.includes("image")
++				? Math.floor(snapcompact.providerImageBudget(activeModel.provider, activeModel.maxInputImages) / 2)
++				: Infinity),
++	);
+ 
+ 	// Get ID of first kept entry
+ 	const firstKeptEntry = compactionEntries[cutPoint.firstKeptEntryIndex];
+diff --git a/packages/ai/src/utils/thinking-loop.ts b/packages/ai/src/utils/thinking-loop.ts
+index c27dbe4..3c4e915 100644
+--- a/packages/ai/src/utils/thinking-loop.ts
++++ b/packages/ai/src/utils/thinking-loop.ts
+@@ -66,6 +66,7 @@ const EXACT_SHORT_MAX_UNIT = 60;
+ const EXACT_SHORT_MIN_REPEATED_CHARS = 180;
+ /** Long cycles need at least three repeats covering at least this many chars. */
+ const EXACT_LONG_MIN_REPEATED_CHARS = 1024;
++const VISIBLE_ECHO_REASON = "repeated at least 24 self-echo fragments over 2048 characters without advancing";
+ 
+ /** Char cap for an unterminated segment; forces a flush so a wall-of-text loop
+  *  (no blank lines / headings) still segments. */
+@@ -150,7 +151,10 @@ export class ThinkingLoopDetector {
+ 	 *  path/identifier every paragraph is still caught. */
+ 	#anchorWindow: Set<string>[] = [];
+ 
+-	constructor(private readonly semanticHeuristics = true) {}
++	constructor(
++		private readonly semanticHeuristics = true,
++		private readonly visibleEchoGuard = false,
++	) {}
+ 
+ 	push(delta: string): string | null {
+ 		if (!delta) return null;
+@@ -162,6 +166,9 @@ export class ThinkingLoopDetector {
+ 		this.#exactScannedAt += delta.length;
+ 		if (this.#exactScannedAt >= EXACT_CHECK_STRIDE || delta.length >= EXACT_CHECK_STRIDE) {
+ 			this.#exactScannedAt = 0;
++			if (this.visibleEchoGuard && detectVisibleEchoRun(this.#tail)) {
++				return VISIBLE_ECHO_REASON;
++			}
+ 			const exact = detectExactSuffixCycle(this.#tail);
+ 			if (exact) {
+ 				const [unit, times] = exact;
+@@ -200,6 +207,7 @@ export class ThinkingLoopDetector {
+ 	 *  terminator). Called when the thinking block ends so the final segment —
+ 	 *  which may be the one that completes a duplicate cluster — is not dropped. */
+ 	flush(): string | null {
++		if (this.visibleEchoGuard && detectVisibleEchoRun(this.#tail)) return VISIBLE_ECHO_REASON;
+ 		// A stream can end before the next cadence boundary. Force one final exact
+ 		// check even when semantic heuristics are disabled and #pending is empty.
+ 		const exact = detectExactSuffixCycle(this.#tail);
+@@ -379,7 +387,7 @@ export function guardThinkingLoopStream(
+ 	const outer = new AssistantMessageEventStream();
+ 	const semanticHeuristics = isLoopGuardedModel(model, options);
+ 	const thinkingDetector = new ThinkingLoopDetector(semanticHeuristics);
+-	const textDetector = new ThinkingLoopDetector(semanticHeuristics);
++	const textDetector = new ThinkingLoopDetector(semanticHeuristics, true);
+ 	const checkAssistantContent = options?.loopGuard?.checkAssistantContent !== false;
+ 
+ 	void (async () => {
+@@ -538,10 +546,34 @@ function detectExactSuffixCycle(text: string): [unit: string, count: number] | n
+ 		if (count < minCount || len * count < minChars) continue;
+ 		const unit = text.slice(-len);
+ 		if (/\p{L}|\p{Extended_Pictographic}/u.test(unit)) return [unit, count];
++		if (len * count >= 2048 && /[^\s]/u.test(unit) && !/\p{N}/u.test(unit)) return [unit, count];
+ 	}
+ 	return null;
+ }
+ 
++/** Observed visible runaway: `next: (next) — tool: (tool) — ...` with changing
++ * words, so it is not an exact cycle. Require a long contiguous run; normal
++ * glossary definitions, headings, and brief echoes do not satisfy this shape. */
++function detectVisibleEchoRun(text: string): boolean {
++	let count = 0;
++	let start = 0;
++	let end = 0;
++	for (const match of text.matchAll(/([^:()\n—]{1,80}):\s*\(([^()\n]{1,80})\)(?:\s*\(\2\))*\s*—/g)) {
++		if (match[1].trim() !== match[2].trim()) {
++			count = 0;
++			continue;
++		}
++		if (count === 0 || text.slice(end, match.index).trim() !== "") {
++			count = 0;
++			start = match.index;
++		}
++		count++;
++		end = match.index + match[0].length;
++		if (count >= 24 && end - start >= 2048) return true;
++	}
++	return false;
++}
++
+ /** Lowercase and tokenize prose plus code/path payloads, dropping pure numbers. */
+ function normalizeSegment(segment: string): string {
+ 	return segment
+diff --git a/packages/ai/test/thinking-loop.test.ts b/packages/ai/test/thinking-loop.test.ts
+index e319bd0..fa63052 100644
+--- a/packages/ai/test/thinking-loop.test.ts
++++ b/packages/ai/test/thinking-loop.test.ts
+@@ -18,6 +18,36 @@ import {
+ import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
+ import { isRetryableError } from "@oh-my-pi/pi-utils";
+ 
++test("rejects runaway punctuation but allows ordinary separators and numeric code", () => {
++	const runaway = new ThinkingLoopDetector(false);
++	let hit: string | null = null;
++	for (let i = 0; i < 32 && !hit; i++) hit = runaway.push("... ".repeat(32));
++	expect(hit).toContain("exact");
++	const ordinary = new ThinkingLoopDetector(false);
++	expect(
++		ordinary.push("A table header\n" + "-".repeat(80) + "\nconst bytes = [" + "0, ".repeat(64) + "];\n"),
++	).toBeNull();
++	expect(ordinary.flush()).toBeNull();
++});
++
++test("visible self-echo narration stops while a glossary with new definitions remains valid", () => {
++	const visible = new ThinkingLoopDetector(false, true);
++	let hit: string | null = null;
++	for (let i = 0; i < 100 && !hit; i++) hit = visible.push(`next_step_${i}: (next_step_${i}) — `);
++	expect(hit).toContain("self-echo");
++	const glossary = new ThinkingLoopDetector(false, true);
++	for (let i = 0; i < 100; i++) expect(glossary.push(`term_${i}: (new definition ${i}) — `)).toBeNull();
++	expect(glossary.flush()).toBeNull();
++});
++
++test("visible echo guard checks the final delta even when it ends before the next scan cadence", () => {
++	const text = Array.from({ length: 200 }, (_, i) => `step_${i}: (step_${i}) — `).join("");
++	const detector = new ThinkingLoopDetector(false, true);
++	expect(detector.push(text.slice(0, 2047))).toBeNull();
++	expect(detector.push(text.slice(2047, 2147))).toBeNull();
++	expect(detector.flush()).toContain("self-echo");
++});
++
+ function context(): Context {
+ 	return { systemPrompt: [], messages: [{ role: "user", content: "go", timestamp: 0 }] };
+ }
+diff --git a/packages/catalog/src/types.ts b/packages/catalog/src/types.ts
+index 19804c4..d2b15cd 100644
+--- a/packages/catalog/src/types.ts
++++ b/packages/catalog/src/types.ts
+@@ -1256,6 +1256,8 @@ export interface Model<TApi extends Api = Api> {
+ 	 * than OMP's general image pipeline. `stb` local backends reject WebP.
+ 	 */
+ 	imageInputDecoder?: "stb";
++	/** Explicit per-request image cap for custom deployments. Positive integer. */
++	maxInputImages?: number;
+ 	/**
+ 	 * Native provider tool-call support. `false` is the only unsupported signal:
+ 	 * `true` and `undefined` both mean callers may use native tools. Catalog and
+diff --git a/packages/coding-agent/src/config/custom-models.ts b/packages/coding-agent/src/config/custom-models.ts
+index 79dd20c..9db5e57 100644
+--- a/packages/coding-agent/src/config/custom-models.ts
++++ b/packages/coding-agent/src/config/custom-models.ts
+@@ -86,6 +86,7 @@ export function buildCustomModelOverlay(
+ 		thinking: modelDef.thinking,
+ 		input: modelDef.input,
+ 		imageInputDecoder: modelDef.imageInputDecoder,
++		maxInputImages: modelDef.maxInputImages,
+ 		tokenizer: modelDef.tokenizer,
+ 		supportsTools: modelDef.supportsTools,
+ 		cost: modelDef.cost,
+@@ -132,6 +133,7 @@ export function finalizeCustomModel(model: CustomModelOverlay, options: CustomMo
+ 		thinking: inheritReferenceThinking(resolvedModel.thinking, reference, resolvedModel.provider),
+ 		input: input as ("text" | "image")[],
+ 		imageInputDecoder: resolvedModel.imageInputDecoder,
++		maxInputImages: resolvedModel.maxInputImages ?? reference?.maxInputImages,
+ 		...(supportsTools !== undefined ? { supportsTools } : {}),
+ 		cost,
+ 		contextWindow: resolvedModel.contextWindow ?? reference?.contextWindow ?? (options.useDefaults ? 128000 : null),
+diff --git a/packages/coding-agent/src/config/model-patch.ts b/packages/coding-agent/src/config/model-patch.ts
+index cec349b..a896b37 100644
+--- a/packages/coding-agent/src/config/model-patch.ts
++++ b/packages/coding-agent/src/config/model-patch.ts
+@@ -103,6 +103,7 @@ export function mergeDiscoveredModel<TApi extends Api>(
+ 					apiKeyConfig: providerOverride?.apiKey,
+ 				},
+ 			),
++			maxInputImages: existing.maxInputImages ?? model.maxInputImages,
+ 			transport: providerOverride?.transport ?? existing.transport ?? model.transport,
+ 			remoteCompaction: mergeProviderRemoteCompactionConfig(
+ 				mergeRemoteCompactionConfig(existing.remoteCompaction, model.remoteCompaction),
+@@ -237,6 +238,7 @@ export interface ModelPatch {
+ 	thinking?: ThinkingConfig;
+ 	input?: ("text" | "image")[];
+ 	imageInputDecoder?: Model<Api>["imageInputDecoder"];
++	maxInputImages?: number;
+ 	tokenizer?: Model<Api>["tokenizer"];
+ 	supportsTools?: boolean;
+ 	cost?: Partial<Model<Api>["cost"]>;
+@@ -272,6 +274,7 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport:
+ 	if (patch.input !== undefined) result.input = patch.input;
+ 	if (patch.tokenizer !== undefined) result.tokenizer = patch.tokenizer;
+ 	if (patch.imageInputDecoder !== undefined) result.imageInputDecoder = patch.imageInputDecoder;
++	if (patch.maxInputImages !== undefined) result.maxInputImages = patch.maxInputImages;
+ 	if (patch.supportsTools !== undefined) result.supportsTools = patch.supportsTools;
+ 	if (patch.contextWindow !== undefined) result.contextWindow = patch.contextWindow;
+ 	if (patch.maxTokens !== undefined) result.maxTokens = patch.maxTokens;
+diff --git a/packages/coding-agent/src/config/model-registry.ts b/packages/coding-agent/src/config/model-registry.ts
+index cd15117..72f4f66 100644
+--- a/packages/coding-agent/src/config/model-registry.ts
++++ b/packages/coding-agent/src/config/model-registry.ts
+@@ -3279,6 +3279,8 @@ export interface ProviderConfigInput {
+ 		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+ 		contextWindow: number;
+ 		maxTokens: number;
++		/** Explicit positive per-request image cap for this deployment. */
++		maxInputImages?: number;
+ 		/** Whether Codex requests should prefer WebSocket transport. */
+ 		preferWebsockets?: boolean;
+ 		headers?: Record<string, string>;
+diff --git a/packages/coding-agent/src/config/models-config-schema-bundle.ts b/packages/coding-agent/src/config/models-config-schema-bundle.ts
+index bae4354..b9834f8 100644
+--- a/packages/coding-agent/src/config/models-config-schema-bundle.ts
++++ b/packages/coding-agent/src/config/models-config-schema-bundle.ts
+@@ -197,6 +197,7 @@ export const getModelsConfigSchemaBundle = once(() => {
+ 		"thinking?": ModelThinkingSchema,
+ 		"input?": '("text" | "image")[]',
+ 		"imageInputDecoder?": '"stb"',
++		"maxInputImages?": "number.integer > 0",
+ 		"tokenizer?": ModelTokenizerSchema,
+ 		"supportsTools?": "boolean",
+ 		"cost?": {
+@@ -250,6 +251,7 @@ export const getModelsConfigSchemaBundle = once(() => {
+ 		"thinking?": ModelThinkingSchema,
+ 		"input?": '("text" | "image")[]',
+ 		"imageInputDecoder?": '"stb"',
++		"maxInputImages?": "number.integer > 0",
+ 		"tokenizer?": ModelTokenizerSchema,
+ 		"supportsTools?": "boolean",
+ 		"cost?": {
+diff --git a/packages/coding-agent/src/config/models-config.ts b/packages/coding-agent/src/config/models-config.ts
+index f0c4c7f..b28a606 100644
+--- a/packages/coding-agent/src/config/models-config.ts
++++ b/packages/coding-agent/src/config/models-config.ts
+@@ -15,6 +15,7 @@ export interface ProviderValidationModel {
+ 	contextWindow?: number;
+ 	supportsTools?: boolean;
+ 	maxTokens?: number;
++	maxInputImages?: number;
+ }
+ 
+ export interface ProviderValidationConfig {
+@@ -85,6 +86,13 @@ export function validateProviderConfiguration(
+ 	}
+ 
+ 	for (const modelDef of models) {
++		if (
++			modelDef.maxInputImages !== undefined &&
++			(!Number.isSafeInteger(modelDef.maxInputImages) || modelDef.maxInputImages <= 0)
++		) {
++			throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxInputImages`);
++		}
++
+ 		if (!hasProviderApi && !modelDef.api) {
+ 			throw new Error(
+ 				mode === "runtime-register"
+diff --git a/packages/coding-agent/src/extensibility/extensions/types.ts b/packages/coding-agent/src/extensibility/extensions/types.ts
+index 9b210d6..c072d6f 100644
+--- a/packages/coding-agent/src/extensibility/extensions/types.ts
++++ b/packages/coding-agent/src/extensibility/extensions/types.ts
+@@ -51,8 +51,10 @@ import type {
+ 	ServiceTierFamily,
+ 	SimpleStreamOptions,
+ 	Static,
++	StopReason,
+ 	TextContent,
+ 	TSchema,
++	Usage,
+ 	UsageProvider,
+ } from "@oh-my-pi/pi-ai";
+ import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
+@@ -754,6 +756,16 @@ export interface AfterProviderResponseEvent extends ProviderResponseMetadata {
+ 	type: "after_provider_response";
+ }
+ 
++/** Completion metadata for a local compaction summary, without summary contents. */
++export interface CompactionRequestEndEvent {
++	type: "compaction_request_end";
++	provider: string;
++	model: string;
++	responseId?: string;
++	usage: Usage;
++	stopReason: StopReason;
++}
++
+ /** Fired before an ordinary prompt or an actually dequeued user-containing batch reaches the provider. */
+ export interface BeforeAgentStartEvent {
+ 	type: "before_agent_start";
+@@ -1098,6 +1110,7 @@ export type ExtensionEvent =
+ 	| ContextEvent
+ 	| BeforeProviderRequestEvent
+ 	| AfterProviderResponseEvent
++	| CompactionRequestEndEvent
+ 	| BeforeAgentStartEvent
+ 	| BeforeSubagentSpawnEvent
+ 	| AgentStartEvent
+@@ -1279,6 +1292,7 @@ export interface ExtensionAPI {
+ 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
+ 	): void;
+ 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
++	on(event: "compaction_request_end", handler: ExtensionHandler<CompactionRequestEndEvent>): void;
+ 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
+ 	on(
+ 		event: "before_subagent_spawn",
+@@ -1623,6 +1637,8 @@ export interface ProviderModelConfig {
+ 	contextWindow: number;
+ 	/** Maximum output tokens. */
+ 	maxTokens: number;
++	/** Explicit positive per-request image cap for this deployment. */
++	maxInputImages?: number;
+ 	/** Whether Codex requests should prefer WebSocket transport. */
+ 	preferWebsockets?: boolean;
+ 	/** Custom headers for this model. */
+diff --git a/packages/coding-agent/src/sdk.ts b/packages/coding-agent/src/sdk.ts
+index bff41d1..e7b69aa 100644
+--- a/packages/coding-agent/src/sdk.ts
++++ b/packages/coding-agent/src/sdk.ts
+@@ -181,7 +181,7 @@ import {
+ 	USER_INTERRUPT_LABEL,
+ 	wrapSteeringForModel,
+ } from "./session/messages";
+-import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
++import { assertProviderContextImageBudget, dropUnreadableContextImages } from "./session/provider-image-budget";
+ import {
+ 	expandDefaultRetryFallbackChains,
+ 	findRetryFallbackCandidates,
+@@ -3943,7 +3943,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
+ 			let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+ 			transformed = await snapcompactInline.transform(transformed, transformModel);
+-			transformed = clampProviderContextImages(transformed, transformModel);
++			transformed = assertProviderContextImageBudget(transformed, transformModel);
+ 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+ 			// After the model-specific normalizers: they carry better wording for the
+ 			// cases they own (STB WebP), so this stays the backstop for everything
+@@ -4844,7 +4844,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 					transformContext: async messages => wrapSteeringForModel(messages),
+ 					transformProviderContext: async (context, transformModel) => {
+ 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+-						transformed = clampProviderContextImages(transformed, transformModel);
++						transformed = assertProviderContextImageBudget(transformed, transformModel);
+ 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+ 						transformed = await dropUnreadableContextImages(transformed, transformModel);
+ 						transformed = await blobBroker.decorateContext(transformed, transformModel);
+diff --git a/packages/coding-agent/src/session/agent-session.ts b/packages/coding-agent/src/session/agent-session.ts
+index 2713e4b..947cfe0 100644
+--- a/packages/coding-agent/src/session/agent-session.ts
++++ b/packages/coding-agent/src/session/agent-session.ts
+@@ -2008,6 +2008,7 @@ export class AgentSession implements SettingsScope {
+ 			modelRegistry: this.#modelRegistry,
+ 			extensionRunner: this.#extensionRunner,
+ 			sideStreamFn: this.#sideStreamFn,
++			prepareSimpleStreamOptions: (options, provider) => this.prepareSimpleStreamOptions(options, provider),
+ 			providerSessionState: this.#providerSessionState,
+ 			preferWebsockets: () => this.preferWebsockets,
+ 			model: () => this.model,
+diff --git a/packages/coding-agent/src/session/provider-image-budget.ts b/packages/coding-agent/src/session/provider-image-budget.ts
+index ef0c690..a5f2c42 100644
+--- a/packages/coding-agent/src/session/provider-image-budget.ts
++++ b/packages/coding-agent/src/session/provider-image-budget.ts
+@@ -1,96 +1,30 @@
+ import type {
+ 	Context,
+-	DeveloperMessage,
+ 	ImageContent,
+ 	Message,
+ 	Model,
+ 	ProviderPayload,
+ 	TextContent,
+-	ToolResultMessage,
+ 	ToolResultProviderMetadata,
+-	UserMessage,
+ } from "@oh-my-pi/pi-ai";
+ import { decodeDataUri } from "@oh-my-pi/pi-ai/providers/openai-data-uri";
+ import { isRecord } from "@oh-my-pi/pi-utils";
+ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+-import { providerImageBudget } from "@oh-my-pi/snapcompact";
++import { countMessageImages, providerImageBudget } from "@oh-my-pi/snapcompact";
+ import { supportsRemoteImageUrls } from "../blob-broker/context-images";
+ import { imageDecodeFailureReason } from "@oh-my-pi/pi-tui/chat/image-loading";
+ 
+-const TOOL_RESULT_IMAGE_OMISSION: TextContent = {
+-	type: "text",
+-	text: "[image omitted: provider image limit]",
+-};
+-
+-function countImages(context: Context): number {
+-	let count = 0;
+-	for (const message of context.messages) {
+-		if (!Array.isArray(message.content)) continue;
+-		for (const part of message.content) {
+-			if (part.type === "image") count++;
+-		}
+-	}
+-	return count;
+-}
+-
+-function clampContent(
+-	content: readonly (TextContent | ImageContent)[],
+-	state: { remainingDrops: number },
+-): (TextContent | ImageContent)[] | undefined {
+-	let changed = false;
+-	const clamped: (TextContent | ImageContent)[] = [];
+-	for (const part of content) {
+-		if (part.type === "image" && state.remainingDrops > 0) {
+-			state.remainingDrops--;
+-			changed = true;
+-			continue;
+-		}
+-		clamped.push(part);
+-	}
+-	return changed ? clamped : undefined;
+-}
+-
+-function clampUserMessage(message: UserMessage, state: { remainingDrops: number }): UserMessage {
+-	if (!Array.isArray(message.content) || state.remainingDrops <= 0) return message;
+-	const content = clampContent(message.content, state);
+-	return content ? { ...message, content, providerPayload: undefined } : message;
+-}
+-
+-function clampDeveloperMessage(message: DeveloperMessage, state: { remainingDrops: number }): DeveloperMessage {
+-	if (!Array.isArray(message.content) || state.remainingDrops <= 0) return message;
+-	const content = clampContent(message.content, state);
+-	return content ? { ...message, content, providerPayload: undefined } : message;
+-}
+-
+-function clampToolResultMessage(message: ToolResultMessage, state: { remainingDrops: number }): ToolResultMessage {
+-	if (state.remainingDrops <= 0) return message;
+-	const content = clampContent(message.content, state);
+-	if (!content) return message;
+-	return { ...message, content: content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION] };
+-}
+-
+-/** Drops oldest transient image blocks so outgoing vision requests fit the active provider's image cap. */
+-export function clampProviderContextImages(context: Context, model: Model): Context {
++/** Reject over-budget requests instead of rewriting previously cached history. */
++export function assertProviderContextImageBudget(context: Context, model: Model): Context {
+ 	if (!model.input.includes("image")) return context;
+-	const limit = providerImageBudget(model.provider);
+-	const totalImages = countImages(context);
+-	if (totalImages <= limit) return context;
+-
+-	const state = { remainingDrops: totalImages - limit };
+-	const messages = context.messages.map(message => {
+-		switch (message.role) {
+-			case "user":
+-				return clampUserMessage(message, state);
+-			case "developer":
+-				return clampDeveloperMessage(message, state);
+-			case "toolResult":
+-				return clampToolResultMessage(message, state);
+-			case "assistant":
+-				return message;
+-		}
+-		return message;
+-	});
+-	return { ...context, messages };
++	const limit = providerImageBudget(model.provider, model.maxInputImages);
++	const totalImages = countMessageImages(context.messages);
++	if (totalImages > limit) {
++		throw new Error(
++			`Image budget exceeded: ${totalImages} images, deployment cap ${limit}. Reduce the image batch or enable context maintenance. No images were removed.`,
++		);
++	}
++	return context;
+ }
+ 
+ /**
+diff --git a/packages/coding-agent/src/session/session-maintenance.ts b/packages/coding-agent/src/session/session-maintenance.ts
+index 05d665e..ea9d4aa 100644
+--- a/packages/coding-agent/src/session/session-maintenance.ts
++++ b/packages/coding-agent/src/session/session-maintenance.ts
+@@ -50,12 +50,15 @@ import {
+ } from "@oh-my-pi/pi-agent-core/compaction/pruning";
+ import type { ProtectedToolMatcher } from "@oh-my-pi/pi-agent-core/compaction/tool-protection";
+ import type {
++	Api,
+ 	AssistantMessage,
+ 	CodexCompactionContext,
++	Context,
+ 	Message,
+ 	Model,
+ 	OpenAIResponsesHistoryPayload,
+ 	ProviderSessionState,
++	SimpleStreamOptions,
+ } from "@oh-my-pi/pi-ai";
+ import * as AIError from "@oh-my-pi/pi-ai/error";
+ import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+@@ -404,6 +407,7 @@ export interface SessionMaintenanceHost {
+ 	modelRegistry: ModelRegistry;
+ 	extensionRunner: ExtensionRunner | undefined;
+ 	sideStreamFn: StreamFn;
++	prepareSimpleStreamOptions(options: SimpleStreamOptions, provider: string): SimpleStreamOptions;
+ 	providerSessionState: Map<string, ProviderSessionState>;
+ 	/** Live `providers.openaiWebsockets` hint for provider calls. */
+ 	preferWebsockets(): boolean | undefined;
+@@ -2455,16 +2459,26 @@ export class SessionMaintenance {
+ 		return tokens;
+ 	}
+ 
++	#hasImagePressure(messages: AgentMessage[]): boolean {
++		const model = this.#model;
++		return (
++			!!model?.input.includes("image") &&
++			snapcompact.countMessageImages(convertToLlm(messages)) >
++				snapcompact.providerImageBudget(model.provider, model.maxInputImages)
++		);
++	}
++
+ 	async runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
+ 		const model = this.#model;
+ 		if (!model) return;
+ 		const contextWindow = model.contextWindow ?? 0;
+ 		if (contextWindow <= 0) return;
+ 		const compactionSettings = cfgCompaction.get(this.#host.settings);
++		const imagePressure = this.#hasImagePressure([...this.#host.messages(), ...messages]);
+ 		const contextTokens = this.#estimatePrePromptContextTokens(messages, contextWindow);
+ 		const pendingMidTurnDeadEnd = this.#midTurnDeadEndPendingPrePrompt;
+ 		this.#midTurnDeadEndPendingPrePrompt = false;
+-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
++		if (!imagePressure && !shouldCompact(contextTokens, contextWindow, compactionSettings)) {
+ 			this.maybeStartSpeculativeCompaction(contextTokens, contextWindow);
+ 			return;
+ 		}
+@@ -2481,7 +2495,7 @@ export class SessionMaintenance {
+ 		// Grace band: a live (or just-started) background speculation absorbs the
+ 		// blocking summarization; the user's prompt goes out immediately and the
+ 		// armed result is spliced in at the next boundary.
+-		if (this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
++		if (!imagePressure && this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
+ 			logger.debug("Pre-prompt threshold deferred to speculative compaction", {
+ 				contextTokens,
+ 				contextWindow,
+@@ -2493,7 +2507,7 @@ export class SessionMaintenance {
+ 		// the history at all. The post-turn threshold path already promotes before
+ 		// compacting; without this, the pre-prompt path would pre-empt promotion and
+ 		// compact (snapcompact/summary) a session that should have just been promoted.
+-		if (await this.#promoteContextModel()) {
++		if (!imagePressure && (await this.#promoteContextModel())) {
+ 			logger.debug("Pre-prompt context promotion avoided compaction", {
+ 				contextTokens,
+ 				contextWindow,
+@@ -2509,6 +2523,7 @@ export class SessionMaintenance {
+ 		});
+ 		await this.runAutoCompaction("threshold", false, false, false, {
+ 			autoContinue: false,
++			imagePressure,
+ 			triggerContextTokens: contextTokens,
+ 			pendingContextTokens: this.#tokenizer.countMessages(messages, { excludeEncryptedReasoning: true }),
+ 			preparedContextTokens: this.#estimateStoredContextTokens(),
+@@ -2593,17 +2608,18 @@ export class SessionMaintenance {
+ 		// will actually rewrite history; awaiting it on every ordinary tool turn lets
+ 		// a slow message_end listener leave the TUI "generating" with no provider
+ 		// request or tool running.
++		const imagePressure = this.#hasImagePressure(activeMessages);
+ 		const billedContextTokens = calculateContextTokens(lastAssistant.usage);
+ 		const storedContextTokens = this.#estimateStoredContextTokens();
+ 		const contextTokens = compactionContextTokens(billedContextTokens, storedContextTokens);
+-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
++		if (!imagePressure && !shouldCompact(contextTokens, contextWindow, compactionSettings)) {
+ 			this.maybeStartSpeculativeCompaction(contextTokens, contextWindow);
+ 			return;
+ 		}
+ 		// Grace band: keep the tool loop moving while a background speculation
+ 		// (live or started here) produces the summary; checked before the
+ 		// persistence barrier so deferred boundaries never await the journal.
+-		if (this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
++		if (!imagePressure && this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
+ 			logger.debug("Mid-run threshold deferred to speculative compaction", {
+ 				contextTokens,
+ 				contextWindow,
+@@ -2639,7 +2655,7 @@ export class SessionMaintenance {
+ 		// crosses the threshold compacts the history (and can hit the no-progress
+ 		// dead-end on a single oversized turn) on a model that should have just
+ 		// been promoted to a larger window instead.
+-		if (await this.#promoteContextModel()) {
++		if (!imagePressure && (await this.#promoteContextModel())) {
+ 			logger.debug("Mid-run context promotion avoided compaction", {
+ 				contextTokens,
+ 				contextWindow,
+@@ -2653,6 +2669,7 @@ export class SessionMaintenance {
+ 			autoContinue: false,
+ 			suppressContinuation: true,
+ 			triggerContextTokens: contextTokens,
++			imagePressure,
+ 			phase: "mid_turn",
+ 			detachPostCommit: true,
+ 		});
+@@ -3313,6 +3330,25 @@ export class SessionMaintenance {
+ 		);
+ 	}
+ 
++	async #completeCompactionRequest<TApi extends Api>(
++		model: Model<TApi>,
++		context: Context,
++		options: SimpleStreamOptions,
++	): Promise<AssistantMessage> {
++		const prepared = this.#host.prepareSimpleStreamOptions(options, model.provider);
++		const stream = await this.#host.sideStreamFn(model, context, prepared);
++		const message = await stream.result();
++		await this.#host.extensionRunner?.emit({
++			type: "compaction_request_end",
++			provider: model.provider,
++			model: model.id,
++			responseId: message.responseId,
++			usage: message.usage,
++			stopReason: message.stopReason,
++		});
++		return message;
++	}
++
+ 	async #compactWithFallbackModel(
+ 		preparation: CompactionPreparation,
+ 		customInstructions: string | undefined,
+@@ -3366,10 +3402,8 @@ export class SessionMaintenance {
+ 						// subagents auto/manually compacting issued uncapped
+ 						// summary requests in parallel (chatgpt-codex review on
+ 						// #3751).
+-						completeImpl: async (requestModel, requestContext, requestOptions) => {
+-							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+-							return stream.result();
+-						},
++						completeImpl: (requestModel, requestContext, requestOptions) =>
++							this.#completeCompactionRequest(requestModel, requestContext, requestOptions),
+ 					},
+ 				);
+ 			} catch (error) {
+@@ -3492,13 +3526,15 @@ export class SessionMaintenance {
+ 	 * (issue #3247).
+ 	 */
+ 	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: EngineCompactionSettings): number {
++		const imageSlots = snapcompact.providerFrameBudget(
++			this.#model?.provider,
++			this.#model?.maxInputImages,
++			snapcompact.countMessageImages(convertToLlm(preparation.recentMessages)),
++		);
++		if (imageSlots === 0) return 0;
+ 		const ctxWindow = this.#model?.contextWindow ?? 0;
+ 		if (ctxWindow <= 0) {
+-			return Math.min(
+-				snapcompact.MAX_FRAMES_DEFAULT,
+-				snapcompact.maxFramesForDataBudget(),
+-				snapcompact.providerFrameBudget(this.#model?.provider),
+-			);
++			return Math.min(snapcompact.MAX_FRAMES_DEFAULT, snapcompact.maxFramesForDataBudget(), imageSlots);
+ 		}
+ 		const reserve = effectiveReserveTokens(ctxWindow, settings);
+ 		let baseTokens = computeNonMessageTokens(
+@@ -3544,7 +3580,7 @@ export class SessionMaintenance {
+ 			Math.floor(frameBudget / snapcompact.FRAME_TOKEN_ESTIMATE),
+ 			snapcompact.MAX_FRAMES_DEFAULT,
+ 			snapcompact.maxFramesForDataBudget(),
+-			snapcompact.providerFrameBudget(this.#model?.provider),
++			imageSlots,
+ 		);
+ 	}
+ 
+@@ -3884,14 +3920,20 @@ export class SessionMaintenance {
+ 	 * Returns 0 when not even one frame fits that budget — the rebuild could
+ 	 * never create headroom, so the caller must not append it.
+ 	 */
+-	#computeSnapcompactRescueMaxFrames(settings: EngineCompactionSettings, keptTailTokens: number): number {
++	#computeSnapcompactRescueMaxFrames(
++		settings: EngineCompactionSettings,
++		keptTailTokens: number,
++		keptTailImages: number,
++	): number {
++		const imageSlots = snapcompact.providerFrameBudget(
++			this.#model?.provider,
++			this.#model?.maxInputImages,
++			keptTailImages,
++		);
++		if (imageSlots === 0) return 0;
+ 		const ctxWindow = this.#model?.contextWindow ?? 0;
+ 		if (ctxWindow <= 0) {
+-			return Math.min(
+-				snapcompact.MAX_FRAMES_DEFAULT,
+-				snapcompact.maxFramesForDataBudget(),
+-				snapcompact.providerFrameBudget(this.#model?.provider),
+-			);
++			return Math.min(snapcompact.MAX_FRAMES_DEFAULT, snapcompact.maxFramesForDataBudget(), imageSlots);
+ 		}
+ 		const thresholdTokens = resolveThresholdTokens(ctxWindow, settings);
+ 		const recoveryBandTokens = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
+@@ -3914,7 +3956,7 @@ export class SessionMaintenance {
+ 			Math.floor(frameBudget / snapcompact.FRAME_TOKEN_ESTIMATE),
+ 			snapcompact.MAX_FRAMES_DEFAULT,
+ 			snapcompact.maxFramesForDataBudget(),
+-			snapcompact.providerFrameBudget(this.#model?.provider),
++			imageSlots,
+ 		);
+ 	}
+ 
+@@ -3962,6 +4004,7 @@ export class SessionMaintenance {
+ 		// shrinks the real culprit. Bail and let the elide/image tiers handle
+ 		// that tail instead.
+ 		let keptTailTokens = 0;
++		let keptTailImages = 0;
+ 		let inKeptRegion = false;
+ 		for (const entry of branchEntries) {
+ 			if (entry.id === staleEntry.firstKeptEntryId) inKeptRegion = true;
+@@ -3972,13 +4015,16 @@ export class SessionMaintenance {
+ 			}
+ 			if (!inKeptRegion) continue;
+ 			const message = (entry as { message?: AgentMessage }).message;
+-			if (message) keptTailTokens += this.#tokenizer.countMessage(message);
++			if (message) {
++				keptTailTokens += this.#tokenizer.countMessage(message);
++				keptTailImages += snapcompact.countMessageImages(convertToLlm([message]));
++			}
+ 		}
+ 		const archive = snapcompact.getPreservedArchive(staleEntry.preserveData);
+ 		if (!archive || archive.frames.length <= 1) return undefined;
+ 		const archiveText = snapcompact.archiveSourceText(archive);
+ 		if (!archiveText) return undefined;
+-		const maxFrames = this.#computeSnapcompactRescueMaxFrames(settings, keptTailTokens);
++		const maxFrames = this.#computeSnapcompactRescueMaxFrames(settings, keptTailTokens, keptTailImages);
+ 		if (maxFrames < 1 || maxFrames >= archive.frames.length) return undefined;
+ 
+ 		const staleDetails = staleEntry.details as snapcompact.CompactionDetails | undefined;
+@@ -4109,6 +4155,8 @@ export class SessionMaintenance {
+ 			 * request (#11482).
+ 			 */
+ 			excludeMediaMethods?: boolean;
++			/** Media pressure requires a text summary and an image-bounded tail. */
++			imagePressure?: boolean;
+ 		} = {},
+ 	): Promise<CompactionCheckResult> {
+ 		const compactionSettings = cfgCompaction.get(this.#host.settings);
+@@ -4127,7 +4175,9 @@ export class SessionMaintenance {
+ 		// were being persisted), drop the stale request rather than fall through
+ 		// to ordinary summary compaction: no summary-provider request was agreed.
+ 		if (explicitNewContextRequest) return COMPACTION_CHECK_NONE;
+-		const methods = resolveCompactionMethodOrder(compactionSettings.methodOrder);
++		const methods: CompactionMethod[] = options.imagePressure
++			? ["soft"]
++			: resolveCompactionMethodOrder(compactionSettings.methodOrder);
+ 		if (methods.length === 0) return COMPACTION_CHECK_NONE;
+ 		const generation = this.#host.promptGeneration();
+ 		const terminalTextAnswer =
+@@ -4164,9 +4214,18 @@ export class SessionMaintenance {
+ 		// Snapcompact is local and instant, so an armed LLM summary (possible
+ 		// only when settings/model changed since arming) never overrides it.
+ 		const claimedSpec = this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
+-		const armedSpec = method === "snapcompact" ? undefined : claimedSpec;
++		const armedSpec = method === "snapcompact" || options.imagePressure ? undefined : claimedSpec;
+ 
+-		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
++		const effectiveSettings = {
++			...resolveMethodSettings(compactionSettings, method),
++			...(options.imagePressure
++				? {
++						keepRecentImages: Math.floor(
++							snapcompact.providerImageBudget(this.#model?.provider, this.#model?.maxInputImages) / 2,
++						),
++					}
++				: {}),
++		};
+ 		const fallbackFromShake = options.fallbackFromShake === true;
+ 		// Shake runs inline (cheap, no remote LLM). If it cannot recover enough
+ 		// context, resume from the next configured method instead of hardcoding a
+@@ -4320,6 +4379,21 @@ export class SessionMaintenance {
+ 
+ 			let pathEntriesForCompaction = pathEntries;
+ 			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
++			if (
++				options.imagePressure &&
++				preparation &&
++				snapcompact.countMessageImages(convertToLlm(preparation.recentMessages)) >
++					snapcompact.providerImageBudget(this.#model.provider, this.#model.maxInputImages)
++			) {
++				throw new Error(
++					"Image budget exceeded by one indivisible turn. Start a smaller image batch; no images were removed.",
++				);
++			}
++			if (!preparation && options.imagePressure) {
++				throw new Error(
++					"Image budget exceeded by one indivisible turn. Start a smaller image batch; no images were removed.",
++				);
++			}
+ 			if (!preparation) {
+ 				// prepareCompaction found nothing to summarize because the kept region
+ 				// is a single oversized recent turn — findCutPoint never cuts inside a
+@@ -4764,6 +4838,8 @@ export class SessionMaintenance {
+ 									// retry too — the budgets would multiply and each outer
+ 									// wait would stack on top of an inner backoff.
+ 									oneshotRetry: false,
++									completeImpl: (requestModel, requestContext, requestOptions) =>
++										this.#completeCompactionRequest(requestModel, requestContext, requestOptions),
+ 								},
+ 							);
+ 							break;
+diff --git a/packages/coding-agent/src/session/snapcompact-inline.ts b/packages/coding-agent/src/session/snapcompact-inline.ts
+index aa3e75d..44a6da1 100644
+--- a/packages/coding-agent/src/session/snapcompact-inline.ts
++++ b/packages/coding-agent/src/session/snapcompact-inline.ts
+@@ -59,18 +59,6 @@ const SAVINGS_MARGIN = 0.9;
+ /** Loose block-array view shared by live contexts and session-history estimates. */
+ type BlockViews = ReadonlyArray<{ type?: unknown; text?: unknown }>;
+ 
+-/** Count image blocks already present across message contents. */
+-function countMessageImages(messages: readonly { content?: unknown }[]): number {
+-	let count = 0;
+-	for (const message of messages) {
+-		if (!Array.isArray(message.content)) continue;
+-		for (const block of message.content as BlockViews) {
+-			if (block.type === "image") count++;
+-		}
+-	}
+-	return count;
+-}
+-
+ /** Image tokens must undercut text tokens by the margin to be worth rendering. */
+ function passesSavingsGate(frames: number, shape: snapcompact.Shape, textTokens: number): boolean {
+ 	return frames * shape.frameTokenEstimate <= textTokens * SAVINGS_MARGIN;
+@@ -317,8 +305,8 @@ export function estimateInlineSavings(input: {
+ 
+ 	const shape = snapcompact.resolveShape(model, options.shape);
+ 	const tokenizer = new Tokenizer(model);
+-	const existingImages = countMessageImages(input.messages);
+-	const budget = snapcompact.providerImageBudget(model.provider) - existingImages;
++	const existingImages = snapcompact.countMessageImages(input.messages);
++	const budget = snapcompact.providerImageBudget(model.provider, model.maxInputImages) - existingImages;
+ 
+ 	const candidates: InlineToolResultCandidate[] = [];
+ 	if (options.renderToolResults) {
+@@ -459,7 +447,9 @@ export class SnapcompactInlineTransformer {
+ 		const shape = snapcompact.resolveShape(model, options.shape);
+ 		const shapeKey = JSON.stringify(shape);
+ 		const tokenizer = new Tokenizer(model);
+-		const budget = snapcompact.providerImageBudget(model.provider) - countMessageImages(context.messages);
++		const budget =
++			snapcompact.providerImageBudget(model.provider, model.maxInputImages) -
++			snapcompact.countMessageImages(context.messages);
+ 		if (budget <= 0) return context;
+ 
+ 		const messages = [...context.messages];
+diff --git a/packages/coding-agent/src/session/turn-recovery.ts b/packages/coding-agent/src/session/turn-recovery.ts
+index cb9c2ea..50b2443 100644
+--- a/packages/coding-agent/src/session/turn-recovery.ts
++++ b/packages/coding-agent/src/session/turn-recovery.ts
+@@ -2290,13 +2290,15 @@ export class TurnRecovery {
+ 		// (every rotation sets switchedCredential and skips it), so without
+ 		// this last resort a provider-wide usage cap never fails over to the
+ 		// configured chain.
+-		const maxRetries = this.#isBoundedThinkingStreamClose(message)
+-			? Math.min(retrySettings.maxRetries, 1)
+-			: retrySettings.maxRetries;
++		const id = this.#classifyRetryMessage(message);
++		const maxRetries = AIError.is(id, AIError.Flag.ThinkingLoop)
++			? Math.min(retrySettings.maxRetries, 2)
++			: this.#isBoundedThinkingStreamClose(message)
++				? Math.min(retrySettings.maxRetries, 1)
++				: retrySettings.maxRetries;
+ 		const retryBudgetExhausted = this.#retryAttempt > maxRetries;
+ 
+ 		const errorMessage = message.errorMessage || "Unknown error";
+-		const id = this.#classifyRetryMessage(message);
+ 		const preserveFailedTurn =
+ 			options?.preserveFailedTurn === true ||
+ 			((classifierRefusal || AIError.is(id, AIError.Flag.MalformedFunctionCall) || AIError.retriable(id)) &&
+diff --git a/packages/coding-agent/test/agent-session-goal-midrun-compaction.test.ts b/packages/coding-agent/test/agent-session-goal-midrun-compaction.test.ts
+index d949558..4aeb451 100644
+--- a/packages/coding-agent/test/agent-session-goal-midrun-compaction.test.ts
++++ b/packages/coding-agent/test/agent-session-goal-midrun-compaction.test.ts
+@@ -1,7 +1,8 @@
+ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+ import * as path from "node:path";
+ import { type } from "@oh-my-pi/omptype";
+-import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
++import { Agent, type AgentMessage, type AgentTool, type StreamFn } from "@oh-my-pi/pi-agent-core";
++import type { SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+ import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
+ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+@@ -14,6 +15,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
+ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
++import { assertProviderContextImageBudget } from "@oh-my-pi/pi-coding-agent/session/provider-image-budget";
+ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+ import { TempDir } from "@oh-my-pi/pi-utils";
+@@ -96,7 +98,10 @@ describe("AgentSession mid-run threshold compaction", () => {
+ 			onProviderCall?: (index: number) => void;
+ 			configureAgent?: (agent: Agent) => void;
+ 			toolResultDetails?: unknown;
++			imageLimit?: number;
+ 			tool?: AgentTool;
++			sideStreamFn?: StreamFn;
++			onPayload?: SimpleStreamOptions["onPayload"];
+ 		} = {},
+ 	): Promise<{
+ 		session: AgentSession;
+@@ -104,8 +109,9 @@ describe("AgentSession mid-run threshold compaction", () => {
+ 		sessionManager: SessionManager;
+ 	}> {
+ 		const observedContexts: string[][] = [];
+-		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+-		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
++		const bundledModel = getBundledModel("anthropic", "claude-sonnet-4-5");
++		if (!bundledModel) throw new Error("Expected claude-sonnet-4-5 model to exist");
++		const model = { ...bundledModel, maxInputImages: options.imageLimit };
+ 
+ 		const modelRegistry = sharedModelRegistry;
+ 		const settings = Settings.isolated({
+@@ -138,6 +144,7 @@ describe("AgentSession mid-run threshold compaction", () => {
+ 			getApiKey: () => "test-key",
+ 			initialState: { model, systemPrompt: ["Test"], tools: [mockBashTool], messages: [] },
+ 			convertToLlm,
++			transformProviderContext: assertProviderContextImageBudget,
+ 			streamFn: (_model, context) => {
+ 				const index = call++;
+ 				options.onProviderCall?.(index);
+@@ -188,6 +195,8 @@ describe("AgentSession mid-run threshold compaction", () => {
+ 			modelRegistry,
+ 			toolRegistry: new Map([[mockBashTool.name, mockBashTool]]),
+ 			extensionRunner: options.extensionRunner,
++			sideStreamFn: options.sideStreamFn,
++			onPayload: options.onPayload,
+ 		});
+ 
+ 		cleanups.push(() => session.dispose());
+@@ -215,6 +224,133 @@ describe("AgentSession mid-run threshold compaction", () => {
+ 		expect(observedContexts[1].join("\n")).toContain("MID-RUN-COMPACTED");
+ 	});
+ 
++	it("compacts image pressure below the token threshold before sending the next request", async () => {
++		const { session, sessionManager, observedContexts } = await createHarness(
++			{ "compaction.thresholdTokens": 1_000_000, "compaction.methodOrder": ["snapcompact"] },
++			{
++				imageLimit: 2,
++				tool: {
++					name: "read",
++					label: "Read",
++					description: "Mock label photo",
++					parameters: type({}),
++					execute: async () => ({ content: [{ type: "image", data: "latest-photo", mimeType: "image/png" }] }),
++				},
++			},
++		);
++		const earlier: AgentMessage = {
++			role: "user",
++			content: [
++				{ type: "image", data: "photo-a", mimeType: "image/png" },
++				{ type: "image", data: "photo-b", mimeType: "image/png" },
++			],
++			timestamp: 0,
++		};
++		sessionManager.appendMessage(earlier);
++		session.agent.replaceMessages([earlier]);
++		const compactSpy = mockCompaction("LABEL-REVIEW-CHECKPOINT");
++		await session.prompt("Continue this batch");
++		expect(compactSpy).toHaveBeenCalledTimes(1);
++		const next = observedContexts[1].join("\n");
++		expect(next).toContain("LABEL-REVIEW-CHECKPOINT");
++		expect(next).toContain("latest-photo");
++		expect(next).not.toContain("photo-a");
++		expect(next).not.toContain("photo-b");
++		expect(sessionManager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(1);
++	});
++
++	it("auto-compaction applies the session output budget and reports summary usage to extensions", async () => {
++		const usageInputs: number[] = [];
++		const runtime = new ExtensionRuntime();
++		const extension = await loadExtensionFromFactory(
++			pi => {
++				pi.on("compaction_request_end", event => {
++					usageInputs.push(event.usage.input);
++				});
++			},
++			tempDir.path(),
++			new EventBus(),
++			runtime,
++			"summary-budget",
++		);
++		const extensionRunner = new ExtensionRunner(
++			[extension],
++			runtime,
++			tempDir.path(),
++			SessionManager.inMemory(),
++			sharedModelRegistry,
++		);
++		const sentPayloads: unknown[] = [];
++		const { session } = await createHarness(
++			{},
++			{
++				extensionRunner,
++				onPayload: payload => ({ ...(payload as Record<string, unknown>), max_tokens: 13 }),
++				sideStreamFn: async (model, _context, options) => {
++					sentPayloads.push(await options?.onPayload?.({ max_tokens: 8192 }, model, options.signal));
++					const stream = new AssistantMessageEventStream();
++					const message = {
++						role: "assistant" as const,
++						content: [{ type: "text" as const, text: "Checkpoint" }],
++						api: model.api,
++						provider: model.provider,
++						model: model.id,
++						usage: highUsage(123),
++						stopReason: "stop" as const,
++						timestamp: Date.now(),
++					};
++					stream.push({ type: "done", reason: "stop", message });
++					return stream;
++				},
++			},
++		);
++		vi.spyOn(compactionModule, "compact").mockImplementation(
++			async (preparation, model, _key, _instructions, signal, options) => {
++				if (!options?.completeImpl) throw new Error("Summary bypassed session transport");
++				await options.completeImpl(model, { systemPrompt: [], messages: [] }, { signal });
++				return {
++					summary: "Checkpoint",
++					firstKeptEntryId: preparation.firstKeptEntryId,
++					tokensBefore: preparation.tokensBefore,
++					details: {},
++				};
++			},
++		);
++		await session.prompt("Continue the review");
++		expect(sentPayloads).toEqual([{ max_tokens: 13 }]);
++		expect(usageInputs).toEqual([123]);
++	});
++
++	it("rejects one oversized tool group without sending it or removing its photos", async () => {
++		const { session, observedContexts } = await createHarness(
++			{ "compaction.thresholdTokens": 1_000_000 },
++			{
++				imageLimit: 2,
++				tool: {
++					name: "read",
++					label: "Read",
++					description: "Mock oversized gallery",
++					parameters: type({}),
++					execute: async () => ({
++						content: Array.from({ length: 3 }, (_, i) => ({
++							type: "image" as const,
++							data: `photo-${i}`,
++							mimeType: "image/png",
++						})),
++					}),
++				},
++			},
++		);
++		const compactSpy = mockCompaction("SHOULD-NOT-SUMMARIZE-AN-OVERSIZED-GROUP");
++		await session.prompt("Review one gallery").catch(error => {
++			expect(String(error)).toContain("Image budget exceeded");
++		});
++		expect(observedContexts).toHaveLength(1);
++		expect(compactSpy).not.toHaveBeenCalled();
++		const tool = session.agent.state.messages.find(message => message.role === "toolResult");
++		expect(tool?.content).toHaveLength(3);
++	});
++
+ 	it("compacts in place between tool-call turns during an active goal run", async () => {
+ 		const { session, observedContexts } = await createHarness();
+ 		session.setGoalModeState(activeGoalState());
+diff --git a/packages/coding-agent/test/agent-session-snapcompact-budget.test.ts b/packages/coding-agent/test/agent-session-snapcompact-budget.test.ts
+index 06e67bd..bc5086d 100644
+--- a/packages/coding-agent/test/agent-session-snapcompact-budget.test.ts
++++ b/packages/coding-agent/test/agent-session-snapcompact-budget.test.ts
+@@ -111,6 +111,34 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
+ 		authStorage.close();
+ 	});
+ 
++	it("reserves image slots for retained label photos instead of producing archive frames that will be evicted", async () => {
++		const model = session.model;
++		if (!model) throw new Error("Expected model");
++		session.agent.setModel({ ...model, maxInputImages: 5 });
++		sessionManager.appendMessage({
++			role: "user",
++			content: Array.from({ length: 2 }, (_, index) => ({
++				type: "image" as const,
++				data: `label-${index}`,
++				mimeType: "image/png",
++			})),
++			timestamp: Date.now(),
++		});
++		const lastEntry = sessionManager.getBranch().at(-1);
++		if (!lastEntry?.id) throw new Error("Expected newest image group");
++		const compactSpy = vi.spyOn(snapcompact, "compact").mockResolvedValue({
++			summary: "archived",
++			shortSummary: "archived",
++			firstKeptEntryId: lastEntry.id,
++			tokensBefore: 100_000,
++			details: { readFiles: [], modifiedFiles: [] },
++			preserveData: { snapcompact: { frames: [], totalChars: 0, truncatedChars: 0 } },
++		});
++		await session.compact(undefined, { mode: "snapcompact" });
++		expect(compactSpy).toHaveBeenCalledTimes(1);
++		expect(compactSpy.mock.calls[0]?.[1]?.maxFrames).toBe(3);
++	});
++
+ 	it("passes a maxFrames whose full projection (frames + text edges + base) fits the budget", async () => {
+ 		// Tighten kept-recent into the realistic ~100k-token range. Without
+ 		// it, the helper has so much headroom that even a flawed (too-large)
+@@ -262,7 +290,7 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
+ 		expect(compactSpy.mock.calls[0]?.[1]?.maxFrames).toBe(snapcompact.maxFramesForDataBudget());
+ 	});
+ 
+-	it("caps maxFrames at the provider image budget so unknown gateways do not archive frames the send path will drop", async () => {
++	it("caps maxFrames at the image budget so unknown gateways can send their archive intact", async () => {
+ 		const model = session.model;
+ 		if (!model) throw new Error("Expected model");
+ 		session.agent.setModel({ ...model, provider: "ramp", contextWindow: 500_000 });
+diff --git a/packages/coding-agent/test/agent-session-thinking-loop-retry.test.ts b/packages/coding-agent/test/agent-session-thinking-loop-retry.test.ts
+index 304f0c9..6fea97a 100644
+--- a/packages/coding-agent/test/agent-session-thinking-loop-retry.test.ts
++++ b/packages/coding-agent/test/agent-session-thinking-loop-retry.test.ts
+@@ -310,6 +310,37 @@ describe("AgentSession thinking-loop retry", () => {
+ 		expect(assistants[0].content).toEqual([{ type: "text", text: "Recovered after retry." }]);
+ 	});
+ 
++	it("stops consecutive loop failures after two retries even with a larger general retry budget", async () => {
++		const model = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" }).model;
++		let calls = 0;
++		const agent = new Agent({
++			getApiKey: () => "test-key",
++			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
++			convertToLlm,
++			streamFn: requestedModel => {
++				calls++;
++				return errorIdOnlyThinkingLoopStream(requestedModel);
++			},
++		});
++		const settings = Settings.isolated({
++			"compaction.enabled": false,
++			"retry.enabled": true,
++			"retry.baseDelayMs": 0,
++			"retry.maxRetries": 10,
++			"retry.modelFallback": false,
++			"todo.enabled": false,
++		});
++		settings.setModelRole("default", `${model.provider}/${model.id}`);
++		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
++		mockSchedulerWaitWithClock();
++		await session.prompt("Exercise bounded loop recovery");
++		await session.waitForIdle();
++		expect(calls).toBe(3);
++		expect(
++			session.agent.state.messages.filter(message => message.role === "assistant" && message.stopReason === "error"),
++		).toHaveLength(1);
++	});
++
+ 	it("injects a redirect notice on each consecutive thinking-loop retry", async () => {
+ 		const model = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" }).model;
+ 		const calls: string[] = [];
+diff --git a/packages/coding-agent/test/compaction.test.ts b/packages/coding-agent/test/compaction.test.ts
+index 2faa79a..936b142 100644
+--- a/packages/coding-agent/test/compaction.test.ts
++++ b/packages/coding-agent/test/compaction.test.ts
+@@ -1353,6 +1353,28 @@ describe("prepareCompaction retained history", () => {
+ });
+ 
+ describe("findCutPoint", () => {
++	it("moves the cut before complete tool groups when photos exceed the retained-image budget", () => {
++		const entries: SessionEntry[] = [createMessageEntry(createUserMessage("Review these labels"))];
++		for (let i = 0; i < 4; i++) {
++			const assistant = createAssistantMessage("");
++			assistant.content = [{ type: "toolCall", id: `photo-${i}`, name: "read", arguments: {} }];
++			entries.push(
++				createMessageEntry(assistant),
++				createMessageEntry({
++					role: "toolResult",
++					toolCallId: `photo-${i}`,
++					toolName: "read",
++					content: [{ type: "image", data: `photo-${i}`, mimeType: "image/png" }],
++					isError: false,
++					timestamp: i,
++				}),
++			);
++		}
++		const cut = findCutPoint(entries, new Tokenizer(), 0, entries.length, 1_000_000, 2);
++		expect(cut.firstKeptEntryIndex).toBe(5);
++		const kept = entries.slice(cut.firstKeptEntryIndex).filter(entry => entry.type === "message");
++		expect(kept.map(entry => entry.message.role)).toEqual(["assistant", "toolResult", "assistant", "toolResult"]);
++	});
+ 	it("summarizes the older reasoning step when retaining it would exceed the recent-history budget", () => {
+ 		// #11365: one user turn contains a 22k-token reasoning step followed by
+ 		// an 18k-token step. Keeping both defeats the 20k retention budget.
+diff --git a/packages/coding-agent/test/session/provider-image-budget.test.ts b/packages/coding-agent/test/session/provider-image-budget.test.ts
+index 9cad4e7..9fdec81 100644
+--- a/packages/coding-agent/test/session/provider-image-budget.test.ts
++++ b/packages/coding-agent/test/session/provider-image-budget.test.ts
+@@ -1,155 +1,57 @@
+ import { describe, expect, it } from "bun:test";
+-import type { Context, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
++import type { Context } from "@oh-my-pi/pi-ai";
+ import { buildModel } from "@oh-my-pi/pi-catalog/build";
+-import { clampProviderContextImages } from "@oh-my-pi/pi-coding-agent/session/provider-image-budget";
+-
+-const UMANS_MODEL = buildModel({
+-	id: "umans-glm-5.2",
+-	name: "umans-glm-5.2",
+-	api: "anthropic-messages",
+-	provider: "umans",
+-	baseUrl: "https://api.code.umans.ai",
++import { assertProviderContextImageBudget } from "@oh-my-pi/pi-coding-agent/session/provider-image-budget";
++
++const model = buildModel({
++	id: "glm",
++	name: "custom",
++	api: "openai-completions",
++	provider: "custom-deployment",
++	baseUrl: "https://invalid.test",
+ 	reasoning: true,
+ 	input: ["text", "image"],
+ 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+-	contextWindow: 128000,
++	contextWindow: 262144,
+ 	maxTokens: 4096,
+ });
+-
+-function image(data: string): ImageContent {
+-	return { type: "image", data, mimeType: "image/png" };
+-}
+-
+-function text(value: string): TextContent {
+-	return { type: "text", text: value };
+-}
+-
+-function imageData(context: Context): string[] {
+-	const data: string[] = [];
+-	for (const message of context.messages) {
+-		if (!Array.isArray(message.content)) continue;
+-		for (const part of message.content) {
+-			if (part.type === "image") data.push(part.data);
+-		}
+-	}
+-	return data;
++function context(images: number): Context {
++	return {
++		systemPrompt: [],
++		messages: Array.from({ length: images }, (_, index) => ({
++			role: "toolResult",
++			toolCallId: `call-${index}`,
++			toolName: "read",
++			content: [{ type: "image", data: `image-${index}`, mimeType: "image/png" }],
++			isError: false,
++			timestamp: index,
++		})),
++	};
+ }
+-
+-function textData(context: Context): string[] {
+-	const data: string[] = [];
+-	for (const message of context.messages) {
+-		if (typeof message.content === "string") {
+-			data.push(message.content);
+-			continue;
+-		}
+-		for (const part of message.content) {
+-			if (part.type === "text") data.push(part.text);
+-		}
+-	}
+-	return data;
+-}
+-
+ describe("provider context image budgets", () => {
+-	it("drops oldest images above the active provider cap while preserving text", () => {
+-		const context: Context = {
+-			systemPrompt: ["system"],
+-			tools: [],
+-			messages: Array.from({ length: 31 }, (_, index) => ({
+-				role: "user",
+-				content: [text(`text-${index}`), image(`image-${index}`)],
+-				timestamp: index,
+-			})),
+-		};
+-
+-		const clamped = clampProviderContextImages(context, UMANS_MODEL);
+-
+-		expect(imageData(clamped)).toEqual(Array.from({ length: 10 }, (_, index) => `image-${index + 21}`));
+-		expect(textData(clamped)).toEqual(Array.from({ length: 31 }, (_, index) => `text-${index}`));
+-		expect(clamped).not.toBe(context);
+-		expect(imageData(context)).toEqual(Array.from({ length: 31 }, (_, index) => `image-${index}`));
++	it("rejects the sixth image without changing previously sent history or dropping archive frames", () => {
++		const request = context(5);
++		const prefix = JSON.stringify(request.messages);
++		request.messages.push(...context(1).messages);
++		const original = JSON.stringify(request);
++		expect(() => assertProviderContextImageBudget(request, model)).toThrow("Image budget exceeded");
++		expect(JSON.stringify(request)).toBe(original);
++		expect(JSON.stringify(request.messages.slice(0, 5))).toBe(prefix);
+ 	});
+-
+-	it("keeps image-only tool results meaningful when every image block is dropped", () => {
+-		const context: Context = {
+-			systemPrompt: [],
+-			tools: [],
+-			messages: Array.from({ length: 11 }, (_, index) => ({
+-				role: "toolResult",
+-				toolCallId: `call-${index}`,
+-				toolName: "read",
+-				content: [image(`image-${index}`)],
+-				isError: false,
+-				timestamp: index,
+-			})),
+-		};
+-
+-		const clamped = clampProviderContextImages(context, UMANS_MODEL);
+-		const firstMessage = clamped.messages[0];
+-
+-		expect(imageData(clamped)).toEqual(Array.from({ length: 10 }, (_, index) => `image-${index + 1}`));
+-		expect(firstMessage?.role).toBe("toolResult");
+-		expect(firstMessage?.content).toEqual([text("[image omitted: provider image limit]")]);
+-	});
+-
+-	it("invalidates native replay payloads when user or developer images are clamped", () => {
+-		const userPayload = {
+-			type: "openaiResponsesHistory" as const,
+-			items: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "user-native" }] }],
+-		};
+-		const developerPayload = {
+-			type: "openaiResponsesHistory" as const,
+-			items: [{ type: "message", role: "developer", content: [{ type: "input_image", image_url: "dev-native" }] }],
+-		};
+-		const context: Context = {
+-			systemPrompt: [],
+-			tools: [],
+-			messages: [
+-				{ role: "user", content: [image("user-image")], providerPayload: userPayload, timestamp: 0 },
+-				{ role: "developer", content: [image("developer-image")], providerPayload: developerPayload, timestamp: 1 },
+-				...Array.from({ length: 10 }, (_, index) => ({
+-					role: "user" as const,
+-					content: [image(`kept-image-${index}`)],
+-					timestamp: index + 2,
+-				})),
+-			],
+-		};
+-
+-		const clamped = clampProviderContextImages(context, UMANS_MODEL);
+-		const clampedUser = clamped.messages[0];
+-		const clampedDeveloper = clamped.messages[1];
+-		const originalUser = context.messages[0];
+-		const originalDeveloper = context.messages[1];
+-
+-		expect(clampedUser?.role).toBe("user");
+-		expect(clampedDeveloper?.role).toBe("developer");
+-		if (
+-			clampedUser?.role !== "user" ||
+-			clampedDeveloper?.role !== "developer" ||
+-			originalUser?.role !== "user" ||
+-			originalDeveloper?.role !== "developer"
+-		) {
+-			throw new Error("Expected clamped user and developer messages");
+-		}
+-		expect(clampedUser.providerPayload).toBeUndefined();
+-		expect(clampedDeveloper.providerPayload).toBeUndefined();
+-		expect(originalUser.providerPayload).toBe(userPayload);
+-		expect(originalDeveloper.providerPayload).toBe(developerPayload);
+-		expect(imageData(clamped)).toEqual(Array.from({ length: 10 }, (_, index) => `kept-image-${index}`));
+-	});
+-
+-	it("preserves context identity when the provider cap is not exceeded", () => {
+-		const context: Context = {
+-			systemPrompt: [],
+-			tools: [],
+-			messages: [
+-				{
+-					role: "user",
+-					content: [text("ok"), ...Array.from({ length: 10 }, (_, index) => image(`image-${index}`))],
+-					timestamp: 1,
+-				},
+-			],
+-		};
+-
+-		expect(clampProviderContextImages(context, UMANS_MODEL)).toBe(context);
++	it("uses an explicit deployment cap on the outgoing request, including remote images", () => {
++		const request = context(7);
++		expect(() => assertProviderContextImageBudget(request, { ...model, maxInputImages: 6 })).toThrow(
++			"deployment cap 6",
++		);
++		request.messages[0].content = [
++			{ type: "image", data: "", url: "https://invalid.test/photo.png", mimeType: "image/png" },
++		];
++		expect(() => assertProviderContextImageBudget(request, { ...model, maxInputImages: 6 })).toThrow("7 images");
++		const sent = assertProviderContextImageBudget(request, { ...model, maxInputImages: 7 });
++		expect(
++			sent.messages.flatMap(message =>
++				Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : [],
++			),
++		).toHaveLength(7);
+ 	});
+ });
+diff --git a/packages/snapcompact/src/snapcompact.ts b/packages/snapcompact/src/snapcompact.ts
+index 73d07e0..4363628 100644
+--- a/packages/snapcompact/src/snapcompact.ts
++++ b/packages/snapcompact/src/snapcompact.ts
+@@ -48,7 +48,7 @@
+ import type { Api, ImageContent, Message, TextContent } from "@oh-my-pi/pi-ai";
+ import { classifyModel, compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
+ import { renderSnapcompactPng, snapcompactSupportedChars } from "@oh-my-pi/pi-natives";
+-import { formatGroupedPaths, prompt } from "@oh-my-pi/pi-utils";
++import { formatGroupedPaths, isRecord, prompt } from "@oh-my-pi/pi-utils";
+ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+ import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
+ import snapcompactSummaryPrompt from "./prompts/snapcompact-summary.md" with { type: "text" };
+@@ -520,13 +520,29 @@ export const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
+ export const DEFAULT_PROVIDER_IMAGE_BUDGET = 5;
+ 
+ /** Per-request image budget for `provider`; unknown providers get the floor. */
+-export function providerImageBudget(provider: string | undefined): number {
++export function providerImageBudget(provider: string | undefined, maxInputImages?: number): number {
++	if (maxInputImages !== undefined) {
++		if (!Number.isSafeInteger(maxInputImages) || maxInputImages <= 0)
++			throw new Error("maxInputImages must be a positive safe integer");
++		return maxInputImages;
++	}
+ 	return (provider !== undefined ? PROVIDER_IMAGE_BUDGETS[provider] : undefined) ?? DEFAULT_PROVIDER_IMAGE_BUDGET;
+ }
+ 
+ /** Archive frame cap for `provider`: image budget, never above {@link MAX_FRAMES_DEFAULT}. */
+-export function providerFrameBudget(provider: string | undefined): number {
+-	return Math.min(providerImageBudget(provider), MAX_FRAMES_DEFAULT);
++export function providerFrameBudget(provider: string | undefined, maxInputImages?: number, retainedImages = 0): number {
++	return Math.max(0, Math.min(providerImageBudget(provider, maxInputImages) - retainedImages, MAX_FRAMES_DEFAULT));
++}
++
++/** Count image blocks including remote references in a normalized LLM history. */
++export function countMessageImages(messages: readonly { content?: unknown }[]): number {
++	let count = 0;
++	for (const message of messages) {
++		if (!Array.isArray(message.content)) continue;
++		const content: readonly unknown[] = message.content;
++		for (const part of content) if (isRecord(part) && part.type === "image") count++;
++	}
++	return count;
+ }
+ 
+ /** Key under `CompactionEntry.preserveData` holding the frame archive. */
+diff --git a/packages/coding-agent/examples/extensions/prefill-diagnostics.ts b/packages/coding-agent/examples/extensions/prefill-diagnostics.ts
+new file mode 100644
+index 0000000..0a0619c
+--- /dev/null
++++ b/packages/coding-agent/examples/extensions/prefill-diagnostics.ts
+@@ -0,0 +1,217 @@
++/** Request metadata only: no prompts, image bytes, headers, URLs, or credentials. */
++import * as fs from "node:fs/promises";
++import * as path from "node:path";
++import { getAgentDir, logger, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
++import { isRecord } from "@oh-my-pi/pi-utils";
++
++function digest(value: unknown): string {
++	return new Bun.CryptoHasher("sha256").update(JSON.stringify(value) ?? "null").digest("hex");
++}
++
++function images(value: unknown): number {
++	if (Array.isArray(value)) return value.reduce((sum: number, part: unknown) => sum + images(part), 0);
++	if (!isRecord(value)) return 0;
++	if (value.type === "image" || value.type === "input_image" || value.type === "image_url") return 1;
++	return Object.values(value).reduce((sum: number, part: unknown) => sum + images(part), 0);
++}
++
++export function summarizePayload(payload: unknown, previous: readonly string[] = []) {
++	const body = isRecord(payload) ? payload : {};
++	const messages = Array.isArray(body.messages)
++		? body.messages
++		: Array.isArray(body.input)
++			? body.input
++			: Array.isArray(body.contents)
++				? body.contents
++				: [];
++	const hashes = messages.map(digest);
++	let commonMessages = 0;
++	while (
++		commonMessages < Math.min(hashes.length, previous.length) &&
++		hashes[commonMessages] === previous[commonMessages]
++	)
++		commonMessages++;
++	return {
++		hashes,
++		commonMessages,
++		previousMessages: previous.length,
++		messageCount: hashes.length,
++		images: images(messages),
++		bytes: Buffer.byteLength(JSON.stringify(payload) ?? "null"),
++		outputLimit: [body.max_tokens, body.max_completion_tokens, body.max_output_tokens].find(
++			value => typeof value === "number",
++		),
++		fixedHash: digest({
++			system: body.system,
++			instructions: body.instructions,
++			tools: body.tools,
++			tool_choice: body.tool_choice,
++		}),
++	};
++}
++
++/** Opt-in worker budget, set by bounded_native_review.py; ordinary sessions only log. */
++export function limitOutput(payload: unknown, limit: number): unknown {
++	if (!isRecord(payload) || limit <= 0) return payload;
++	const body = { ...payload };
++	for (const key of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
++		if (typeof body[key] === "number") body[key] = Math.min(body[key], limit);
++	}
++	return body;
++}
++
++function budget(name: string): number {
++	const value = Number(process.env[name] ?? 0);
++	if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
++	return value;
++}
++
++export default function prefillDiagnostics(pi: ExtensionAPI) {
++	let sessionId = "";
++	let previous: string[] = [];
++	let requests = 0;
++	let uncachedInput = 0;
++	let beganAt = Date.now();
++	let boundary = 0;
++	let requestStartedAt: number | undefined;
++	let firstDeltaSeen = false;
++	let compacting = false;
++	let pending: Promise<void> = Promise.resolve();
++	const maxRequests = budget("OMP_REVIEW_MAX_REQUESTS");
++	const maxSeconds = budget("OMP_REVIEW_MAX_SECONDS");
++	const maxInput = budget("OMP_REVIEW_MAX_UNCACHED_INPUT");
++	const maxOutput = budget("OMP_REVIEW_MAX_OUTPUT");
++
++	function record(ctx: ExtensionContext, event: Record<string, unknown>): Promise<void> {
++		const id = ctx.sessionManager.getSessionId();
++		if (sessionId !== id) {
++			sessionId = id;
++			previous = [];
++			requests = 0;
++			uncachedInput = 0;
++			boundary = 0;
++			beganAt = Date.now();
++		}
++		const line = JSON.stringify({ version: 1, at: new Date().toISOString(), sessionId: id, boundary, ...event });
++		const filename = path.join(getAgentDir(), "diagnostics", "prefill", `${id}.jsonl`);
++		pending = pending
++			.then(async () => {
++				await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
++				await fs.appendFile(filename, `${line}\n`, { mode: 0o600 });
++			})
++			.catch(error => logger.warn("Prefill diagnostics write failed", { error: String(error) }));
++		return pending;
++	}
++
++	pi.on("session_start", async (_event, ctx) => {
++		await record(ctx, { event: "session_start" });
++	});
++	pi.on("before_provider_request", async (event, ctx) => {
++		if (
++			(maxRequests > 0 && requests >= maxRequests) ||
++			(maxSeconds > 0 && Date.now() - beganAt >= maxSeconds * 1000) ||
++			(maxInput > 0 && uncachedInput >= maxInput)
++		) {
++			await record(ctx, { event: "worker_budget_stop", requests, uncachedInput });
++			ctx.abort();
++			throw new Error("Bounded review budget exhausted; durable progress must be checked before restarting.");
++		}
++		const payload = limitOutput(event.payload, maxOutput);
++		const summary = summarizePayload(payload, compacting ? [] : previous);
++		if (!compacting) previous = summary.hashes;
++		requests++;
++		requestStartedAt = performance.now();
++		firstDeltaSeen = false;
++		await record(ctx, {
++			event: "request",
++			request: requests,
++			kind: compacting ? "compaction" : "agent",
++			provider: ctx.model?.provider,
++			model: ctx.model?.id,
++			...summary,
++		});
++		return payload;
++	});
++	pi.on("after_provider_response", async (event, ctx) => {
++		await record(ctx, {
++			event: "response_headers",
++			request: requests,
++			status: event.status,
++			serverRequestId: event.requestId,
++			headersAfterMs: requestStartedAt === undefined ? undefined : performance.now() - requestStartedAt,
++		});
++		// A bounded worker cannot make useful progress with forbidden credentials.
++		if (maxRequests > 0 && (event.status === 401 || event.status === 403)) ctx.abort();
++	});
++	pi.on("message_update", async (event, ctx) => {
++		const update = event.assistantMessageEvent;
++		if (
++			firstDeltaSeen ||
++			requestStartedAt === undefined ||
++			(update.type !== "text_delta" && update.type !== "thinking_delta" && update.type !== "toolcall_delta") ||
++			!update.delta
++		)
++			return;
++		firstDeltaSeen = true;
++		await record(ctx, {
++			event: "first_delta",
++			request: requests,
++			kind: update.type,
++			firstDeltaAfterMs: performance.now() - requestStartedAt,
++		});
++	});
++	pi.on("message_end", async (event, ctx) => {
++		if (event.message.role !== "assistant") return;
++		const { usage, stopReason, errorId, responseId } = event.message;
++		if (
++			maxRequests > 0 &&
++			stopReason === "error" &&
++			/key_disabled|invalid_api_key|authentication_error/i.test(event.message.errorMessage ?? "")
++		)
++			ctx.abort();
++		uncachedInput += usage.input;
++		await record(ctx, {
++			event: "assistant_end",
++			request: requests,
++			stopReason,
++			errorId,
++			responseId,
++			durationMs: requestStartedAt === undefined ? undefined : performance.now() - requestStartedAt,
++			usage: { input: usage.input, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, output: usage.output },
++			uncachedInput,
++		});
++	});
++	pi.on("session_compact", async (_event, ctx) => {
++		boundary++;
++		await record(ctx, { event: "compaction_commit" });
++	});
++	pi.on("compaction_request_end", async (event, ctx) => {
++		uncachedInput += event.usage.input;
++		await record(ctx, {
++			event: "compaction_request_end",
++			request: event.responseId ? requests : undefined,
++			provider: event.provider,
++			model: event.model,
++			responseId: event.responseId,
++			stopReason: event.stopReason,
++			usage: {
++				input: event.usage.input,
++				cacheRead: event.usage.cacheRead,
++				cacheWrite: event.usage.cacheWrite,
++				output: event.usage.output,
++			},
++			uncachedInput,
++		});
++	});
++	pi.on("auto_compaction_start", async (event, ctx) => {
++		compacting = true;
++		await record(ctx, { event: "compaction_start", reason: event.reason, action: event.action });
++	});
++	pi.on("auto_compaction_end", async (event, ctx) => {
++		compacting = false;
++		await record(ctx, { event: "compaction_end", aborted: event.aborted, action: event.action });
++	});
++	pi.on("session_shutdown", async () => {
++		await pending;
++	});
++}
+diff --git a/packages/coding-agent/test/config/model-image-budget-config.test.ts b/packages/coding-agent/test/config/model-image-budget-config.test.ts
+new file mode 100644
+index 0000000..140bec8
+--- /dev/null
++++ b/packages/coding-agent/test/config/model-image-budget-config.test.ts
+@@ -0,0 +1,58 @@
++import { expect, test } from "bun:test";
++import * as path from "node:path";
++import { type } from "@oh-my-pi/omptype";
++import { AuthStorage, type Context } from "@oh-my-pi/pi-ai";
++import { TempDir } from "@oh-my-pi/pi-utils";
++import { ModelRegistry } from "../../src/config/model-registry";
++import { ModelsConfigSchema } from "../../src/config/models-config-schema";
++import { assertProviderContextImageBudget } from "../../src/session/provider-image-budget";
++
++test("a deployment image cap from models.yml controls requests and rejects a fractional cap", async () => {
++	const model = { id: "glm", input: ["text", "image"], contextWindow: 262144, maxTokens: 4096, maxInputImages: 7 };
++	const config = {
++		providers: {
++			"private-deployment": {
++				api: "openai-completions",
++				baseUrl: "https://invalid.test/v1",
++				auth: "none",
++				models: [model],
++			},
++		},
++	};
++	const invalid = ModelsConfigSchema({
++		providers: {
++			"private-deployment": {
++				...config.providers["private-deployment"],
++				models: [{ ...model, maxInputImages: 2.5 }],
++			},
++		},
++	});
++	expect(invalid instanceof type.errors).toBe(true);
++	const dir = TempDir.createSync("omp-image-cap-config-");
++	const auth = await AuthStorage.create(":memory:");
++	try {
++		const filename = path.join(dir.path(), "models.yml");
++		await Bun.write(filename, JSON.stringify(config));
++		const registry = new ModelRegistry(auth, filename);
++		const resolved = registry.find("private-deployment", "glm");
++		if (!resolved) throw new Error(String(registry.getError() ?? "Custom model did not load"));
++		const context: Context = {
++			systemPrompt: [],
++			messages: [
++				{
++					role: "user",
++					content: Array.from({ length: 8 }, (_, i) => ({
++						type: "image",
++						data: `photo-${i}`,
++						mimeType: "image/png",
++					})),
++					timestamp: 0,
++				},
++			],
++		};
++		expect(() => assertProviderContextImageBudget(context, resolved)).toThrow("deployment cap 7");
++	} finally {
++		auth.close();
++		dir.removeSync();
++	}
++});
+diff --git a/packages/coding-agent/test/prefill-diagnostics.test.ts b/packages/coding-agent/test/prefill-diagnostics.test.ts
+new file mode 100644
+index 0000000..30d523d
+--- /dev/null
++++ b/packages/coding-agent/test/prefill-diagnostics.test.ts
+@@ -0,0 +1,59 @@
++import { expect, test } from "bun:test";
++import { buildModel } from "@oh-my-pi/pi-catalog/build";
++import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
++import { limitOutput, summarizePayload } from "../examples/extensions/prefill-diagnostics";
++
++test("diagnostics distinguish an appended request from a rewritten earlier image without recording contents", () => {
++	const first = {
++		messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "secret-image-data" } }] }],
++		tools: [{ name: "read" }],
++	};
++	const initial = summarizePayload(first);
++	const appended = { ...first, messages: [...first.messages, { role: "user", content: [] }] };
++	expect(summarizePayload(appended, initial.hashes).commonMessages).toBe(1);
++	const evicted = { ...appended, messages: [{ role: "user", content: [] }, appended.messages[1]] };
++	expect(summarizePayload(evicted, initial.hashes).commonMessages).toBe(0);
++	expect(initial.images).toBe(1);
++	expect(JSON.stringify(initial)).not.toContain("secret-image-data");
++});
++
++test("bounded review output cap wins without mutating the provider payload or raising smaller caps", () => {
++	const original = { max_tokens: 131072, messages: [], credentials: "private" };
++	expect(limitOutput(original, 8192)).toMatchObject({ max_tokens: 8192 });
++	expect(original.max_tokens).toBe(131072);
++	expect(limitOutput({ max_output_tokens: 512 }, 8192)).toMatchObject({ max_output_tokens: 512 });
++});
++
++test("aborting from the request budget hook stops transport before any HTTP attempt", async () => {
++	const model = buildModel({
++		id: "glm",
++		name: "Offline fixture",
++		api: "openai-completions",
++		provider: "offline-test",
++		baseUrl: "https://invalid.test/v1",
++		reasoning: false,
++		input: ["text"],
++		contextWindow: 4096,
++		maxTokens: 1024,
++		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++	});
++	const controller = new AbortController();
++	let httpAttempts = 0;
++	const result = await streamOpenAICompletions(
++		model,
++		{ systemPrompt: [], messages: [{ role: "user", content: "offline budget fixture", timestamp: 0 }] },
++		{
++			apiKey: "offline-test-key",
++			signal: controller.signal,
++			onPayload: () => {
++				controller.abort();
++			},
++			fetch: () => {
++				httpAttempts++;
++				return Promise.reject(new Error("HTTP forbidden in offline test"));
++			},
++		},
++	).result();
++	expect(result.stopReason).toBe("aborted");
++	expect(httpAttempts).toBe(0);
++});

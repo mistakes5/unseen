@@ -9,6 +9,8 @@
 This branch adds course-specific participation, Jev question detection, prepared
 local course context, session archives, answer expansion/refinement, and an isolated
 Codex CLI answer provider. Start with [classroom setup](docs/classroom-setup.md).
+To rebuild the installed October 5 snapshot, including its patched OMP runtime
+and private configuration migration, follow [reproduce the installation](docs/reproduce-installation.md).
 **Coding agents must read [AGENTS.md](AGENTS.md) and ask the required unresolved
 setup questions before applying a class configuration.** Experimental answer-format
 routing is not enabled; see the setup guide for measured tradeoffs and limitations.

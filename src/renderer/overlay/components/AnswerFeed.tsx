@@ -1,7 +1,7 @@
 import React, { memo, useLayoutEffect, useRef, useState } from 'react';
 import { useOverlayStore, type AnswerItem } from '../store';
 import { renderMarkdown } from '../markdown';
-import { expandAnswer } from '../controller';
+import { expandAnswer, retryAnswer } from '../controller';
 
 function CopyButton({ text }: { text: string }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
@@ -37,18 +37,22 @@ const AnswerCard = memo(function AnswerCard({ a, labels, professor }: {
   return (
     <article className={`answer-item phase-${a.phase ?? 'done'}`}>
       <div className="meta">
+        {a.responseKind === 'question-suggestion' && <span>Question to ask · draft</span>}
         <span>{a.ts}{labels && a.speaker !== undefined ? ` · ${a.speaker === professor ? 'Professor' : `S${a.speaker}`}` : ''}</span>
         <span className={`phase-badge ${a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
         {a.text && <CopyButton text={a.text} />}
       </div>
-      {a.question && <div className="question-text">{a.question}</div>}
+      {a.question && <div className="question-text">{a.responseKind === 'question-suggestion' ? 'Possible discussion question' : a.question}</div>}
+      {a.responseKind === 'question-suggestion' && <div className="meta">Choose whether and when to ask; this is not spoken automatically.</div>}
       {a.contextHint && <details className="question-context"><summary>Discussion context</summary><div>{a.contextHint}</div></details>}
       {a.error ? (
         <span className="err">error: {a.error}</span>
       ) : (
         <MarkdownBody text={a.text} />
       )}
-      {a.phase === 'done' && a.text && <button className="ghost-btn"
+      {a.phase === 'error' && a.canRetry && <button className="ghost-btn"
+        onClick={() => retryAnswer(a.id)}>Retry answer</button>}
+      {a.phase === 'done' && a.text && a.responseKind !== 'question-suggestion' && <button className="ghost-btn"
         disabled={a.refinement === 'queued' || a.refinement === 'answering' || a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
         onClick={() => expandAnswer(a.id)}>
         {a.expansion?.phase === 'queued' ? 'Expansion queued…' : a.expansion?.phase === 'answering' ? 'Expanding…'

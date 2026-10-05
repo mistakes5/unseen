@@ -72,7 +72,7 @@ export function App(): React.JSX.Element {
         <div className="capture-actions">
           <button
             className={`ghost-btn ${listening ? 'active' : ''}`}
-            title={listening ? 'Stop listening' : 'Start listening'}
+            title={listening ? 'Stop listening — automatically stops 3 hours after Start' : 'Start listening — automatically stops after 3 hours'}
             onClick={() => {
               const now = toggleListening();
               setListening(now);
