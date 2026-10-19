@@ -16,7 +16,7 @@ Apple Silicon and Intel ZIPs on the same release.
 The downloadable installer is the same reviewed `install-mac.command` script
 in the repository. Agents can fetch it, inspect it, then run it with Bash.
 Use `--no-open` to install without launching, `--install-dir /absolute/folder`
-for a different destination, or `--release classroom-v0.2.0` to select a release.
+for a different destination, or `--release classroom-v0.2.1` to select a release.
 `--archive ZIP --checksum FILE` verifies and installs an already downloaded copy.
 
 Updates leave user data alone and preserve the old app in a hidden backup folder
