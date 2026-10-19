@@ -85,7 +85,9 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           chmod +x install-mac.command
-          cp install-mac.command 'Install Classroom Copilot.command'
-          ditto -c -k --keepParent 'Install Classroom Copilot.command' Install-Classroom-Copilot.zip
+          mkdir -p installer-package
+          cp install-mac.command 'installer-package/Install Classroom Copilot.command'
+          ditto -c -k installer-package Install-Classroom-Copilot.zip
           gh release upload "$RELEASE_TAG" install-mac.command Install-Classroom-Copilot.zip --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest
+          bash install-mac.command --release "$RELEASE_TAG" --no-open --install-dir "$RUNNER_TEMP/public-install-check"

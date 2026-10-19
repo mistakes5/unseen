@@ -31,7 +31,7 @@ if [ -n "$local_archive" ]; then
 else
   base="https://github.com/mistakes5/unseen/releases/latest/download"
   if [ "$release" != "latest" ]; then base="https://github.com/mistakes5/unseen/releases/download/$release"; fi
-  echo "Downloading the complete Classroom Copilot app for $arch…"
+  echo "Downloading the complete Classroom Copilot app for ${arch}..."
   /usr/bin/curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 600 "$base/$asset" -o "$work_dir/$asset"
   /usr/bin/curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 60 "$base/$asset.sha256" -o "$work_dir/$asset.sha256"
 fi
