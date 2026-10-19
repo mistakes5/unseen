@@ -1,7 +1,8 @@
-import React, { memo, useLayoutEffect, useRef, useState } from 'react';
+import React, { memo, useState } from 'react';
 import { useOverlayStore, type AnswerItem } from '../store';
 import { renderMarkdown } from '../markdown';
 import { expandAnswer, retryAnswer } from '../controller';
+import { useReadingAnchor } from './useReadingAnchor';
 
 function CopyButton({ text }: { text: string }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
@@ -14,7 +15,7 @@ function CopyButton({ text }: { text: string }): React.JSX.Element {
         setTimeout(() => setCopied(false), 1200);
       }}
     >
-      {copied ? '✓' : 'copy'}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   );
 }
@@ -35,24 +36,29 @@ const AnswerCard = memo(function AnswerCard({ a, labels, professor }: {
     : a.phase === 'answering' ? 'Answering…'
     : a.phase === 'queued' ? 'Queued' : a.phase === 'error' ? 'Needs attention' : 'Ready';
   return (
-    <article className={`answer-item phase-${a.phase ?? 'done'}`}>
+    <article className={`answer-item phase-${a.phase ?? 'done'}`} data-answer-id={String(a.id)}>
+      <div className="row-head">
+        <div className="question-text">{a.responseKind === 'question-suggestion' ? 'Possible discussion question'
+          : a.question || 'Latest speech'}</div>
+        <time>{a.ts}</time>
+      </div>
       <div className="meta">
         {a.responseKind === 'question-suggestion' && <span>Question to ask · draft</span>}
-        <span>{a.ts}{labels && a.speaker !== undefined ? ` · ${a.speaker === professor ? 'Professor' : `S${a.speaker}`}` : ''}</span>
-        <span className={`phase-badge ${a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
+        {labels && a.speaker !== undefined && <span>{a.speaker === professor ? 'Professor' : `Speaker ${a.speaker}`}</span>}
+        <span className={`phase-badge ${a.refinement && a.refinement !== 'done' ? `refine-${a.refinement}` : a.phase ?? 'done'}`}>{phaseLabel(a)}</span>
+        <span className="spacer" />
         {a.text && <CopyButton text={a.text} />}
       </div>
-      {a.question && <div className="question-text">{a.responseKind === 'question-suggestion' ? 'Possible discussion question' : a.question}</div>}
-      {a.responseKind === 'question-suggestion' && <div className="meta">Choose whether and when to ask; this is not spoken automatically.</div>}
+      {a.responseKind === 'question-suggestion' && <div className="draft-note">Choose whether and when to ask; this is not spoken automatically.</div>}
       {a.contextHint && <details className="question-context"><summary>Discussion context</summary><div>{a.contextHint}</div></details>}
       {a.error ? (
-        <span className="err">error: {a.error}</span>
+        <div className="err" role="alert" title={a.error}>{a.error}</div>
       ) : (
         <MarkdownBody text={a.text} />
       )}
-      {a.phase === 'error' && a.canRetry && <button className="ghost-btn"
+      {a.phase === 'error' && a.canRetry && <button className="ghost-btn card-action"
         onClick={() => retryAnswer(a.id)}>Retry answer</button>}
-      {a.phase === 'done' && a.text && a.responseKind !== 'question-suggestion' && <button className="ghost-btn"
+      {a.phase === 'done' && a.text && a.responseKind !== 'question-suggestion' && <button className="ghost-btn card-action"
         disabled={a.refinement === 'queued' || a.refinement === 'answering' || a.expansion?.phase === 'queued' || a.expansion?.phase === 'answering'}
         onClick={() => expandAnswer(a.id)}>
         {a.expansion?.phase === 'queued' ? 'Expansion queued…' : a.expansion?.phase === 'answering' ? 'Expanding…'
@@ -61,7 +67,7 @@ const AnswerCard = memo(function AnswerCard({ a, labels, professor }: {
       </button>}
       {a.expansion?.visible && <div className="expanded-answer">
         <div className="meta"><span>Expanded explanation</span>{a.expansion.text && <CopyButton text={a.expansion.text} />}</div>
-        {a.expansion.error && <span className="err">{a.expansion.error}</span>}
+        {a.expansion.error && <div className="err" title={a.expansion.error}>{a.expansion.error}</div>}
         <MarkdownBody text={a.expansion.text} />
       </div>}
     </article>
@@ -72,55 +78,37 @@ export const AnswerFeed = memo(function AnswerFeed(): React.JSX.Element {
   const answers = useOverlayStore((s) => s.answers);
   const professor = useOverlayStore(s => s.professorSpeaker);
   const labels = useOverlayStore(s => s.settings?.stt.diarize ?? false);
-  const ref = useRef<HTMLDivElement>(null);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const nearTop = useRef(true);
-  const previous = useRef({ count: 0, height: 0 });
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (answers.length > previous.current.count) {
-      if (nearTop.current) { el.scrollTop = 0; setShowScrollBtn(false); }
-      else { el.scrollTop += el.scrollHeight - previous.current.height; setShowScrollBtn(true); }
-    }
-    previous.current = { count: answers.length, height: el.scrollHeight };
-  });
+  const reading = useReadingAnchor<HTMLDivElement>(answers);
   const quiet = answers.filter(a => a.phase === 'skipped' || a.phase === 'cancelled');
   const visible = answers.filter(a => a.phase !== 'skipped' && a.phase !== 'cancelled');
 
   return (
-    <>
+    <div className="feed">
       <div
         id="answers"
-        ref={ref}
-        onScroll={(e) => { nearTop.current = e.currentTarget.scrollTop <= 30; setShowScrollBtn(!nearTop.current); }}
+        ref={reading.ref}
+        onScroll={reading.onScroll}
+        onPointerEnter={reading.onPointerEnter}
+        onPointerLeave={reading.onPointerLeave}
       >
         {visible.length === 0 && (
           <div className="empty-hint">
-            Answers appear here when a question is detected — or hit “Ask now” to answer the
-            latest thing said.
+            Answers appear here when a question is detected. Use Ask now to answer the latest
+            thing said.
           </div>
         )}
         {visible.map((a) => (
           <AnswerCard key={a.id} a={a} labels={labels} professor={professor} />
         ))}
-        {quiet.length > 0 && <details className="quiet-answers"><summary>{quiet.length} skipped or cancelled · show history</summary>
+        {quiet.length > 0 && <details className="quiet-answers"><summary>{quiet.length} skipped or cancelled</summary>
           {quiet.map(a => <div key={a.id} className="quiet-answer"><span>{a.ts} · {a.phase}</span><div>{a.question}</div></div>)}
         </details>}
       </div>
-      {showScrollBtn && (
-        <button
-          className="ghost-btn scroll-btn"
-          onClick={() => {
-            const el = ref.current;
-            if (el) el.scrollTop = 0;
-            nearTop.current = true;
-            setShowScrollBtn(false);
-          }}
-        >
-          ↑ newest
+      {reading.away && (
+        <button className="scroll-btn" onClick={reading.jumpToNewest}>
+          {reading.newer > 0 ? `${reading.newer} newer` : 'Back to newest'}
         </button>
       )}
-    </>
+    </div>
   );
 });

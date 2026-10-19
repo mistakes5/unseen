@@ -1,16 +1,57 @@
-<p align="center">
-  <img src="banner.png" alt="Unseen — your photographic memory" width="100%" />
-</p>
+# Classroom Copilot for Mac
 
-# Unseen — your photographic memory
+**Download the complete app. No compiling, npm, Homebrew, or Xcode needed.**
 
-## Classroom Copilot fork
+[**Download the Mac installer**](https://github.com/mistakes5/unseen/releases/latest/download/Install-Classroom-Copilot.zip) · [Latest release](https://github.com/mistakes5/unseen/releases/latest)
+
+Unzip the installer and double-click **Install Classroom Copilot.command**. It
+detects Apple Silicon or Intel, downloads the matching full `.app`, verifies the
+checksum and code signature, installs into `~/Applications`, and opens it.
+Existing recordings and settings stay in place. An update refuses to replace a
+running app so it cannot interrupt a lecture.
+
+Prefer the app itself? Download [Apple Silicon](https://github.com/mistakes5/unseen/releases/latest/download/Classroom-Copilot-mac-arm64.zip)
+or [Intel](https://github.com/mistakes5/unseen/releases/latest/download/Classroom-Copilot-mac-x64.zip),
+unzip, and move **Classroom Copilot.app** into Applications.
+
+### Installing through Codex or another agent
+
+Give your agent this:
+
+> Install and open the prebuilt Classroom Copilot Mac app from
+> https://github.com/mistakes5/unseen. Follow its AGENTS.md binary-install path.
+> Do not build from source or install development dependencies.
+
+The installer can also run directly in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mistakes5/unseen/classroom-copilot/install-mac.command -o /tmp/classroom-copilot-install.command
+bash /tmp/classroom-copilot-install.command
+```
+
+The app includes Electron and a pinned native Codex CLI. It uses your own Codex
+login; no publisher keys, OMP auth stores, transcripts, or personal settings are
+included. First launch opens setup for your own speech/AI provider credentials.
+In **Profiles → Course folder…**, pick a course folder to enable transcript copies
+and notes there. Pressing **Stop** asks before GPT-6.1 Sol, low reasoning, reviews
+all that profile’s same-day recordings and pieces related sections into notes.
+
+**First-open macOS approval:** this release is ad-hoc signed, not Apple-notarized.
+macOS may ask you to review the app in **System Settings → Privacy & Security**.
+The installer never disables Gatekeeper or removes quarantine. Developer ID
+signing and notarization are needed to remove this remaining approval step.
+
+See [installation details](docs/install-mac.md). The rest of this page describes
+the app’s features and upstream project.
+
+## About this fork
 
 This branch adds course-specific participation, Jev question detection, prepared
 local course context, session archives, answer expansion/refinement, and an isolated
 Codex CLI answer provider. Start with [classroom setup](docs/classroom-setup.md).
-To rebuild the installed October 5 snapshot, including its patched OMP runtime
-and private configuration migration, follow [reproduce the installation](docs/reproduce-installation.md).
+For development or historical source reproduction, see
+[reproduce the installation](docs/reproduce-installation.md). Ordinary installation
+uses the prebuilt release above; OMP and source builds are optional developer paths.
 **Coding agents must read [AGENTS.md](AGENTS.md) and ask the required unresolved
 setup questions before applying a class configuration.** Experimental answer-format
 routing is not enabled; see the setup guide for measured tradeoffs and limitations.
@@ -106,15 +147,16 @@ Your data lives on your machine by default. Flip Settings → Memory → **Store
 
 ## Install
 
-**Download an installer** from [Releases](https://github.com/repowise-dev/unseen/releases) — dmg (macOS), exe (Windows), AppImage/deb (Linux).
+**Download the Mac app** from [this fork’s Releases](https://github.com/mistakes5/unseen/releases/latest).
+Use the installer at the top of this page for the shortest path. This fork publishes macOS builds.
 
-> Builds are not yet code-signed: on macOS right-click the app → **Open** the first time; on Windows click "More info → Run anyway" in SmartScreen.
+The macOS signing/first-open status is described above; source builds are for development.
 
-**Or run from source:**
+**Development only — run from source:**
 
 ```bash
-git clone https://github.com/repowise-dev/unseen && cd unseen
-npm install
+git clone --branch classroom-copilot https://github.com/mistakes5/unseen && cd unseen
+npm ci
 npm run dev
 ```
 

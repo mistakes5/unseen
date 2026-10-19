@@ -24,7 +24,8 @@ function codexWorkspace(): Promise<string> {
 
 function codexExecutable(): string {
   if (process.env.CLASSROOM_CODEX_BIN) return process.env.CLASSROOM_CODEX_BIN;
-  return ['/opt/homebrew/bin/codex', '/usr/local/bin/codex'].find(existsSync) ?? 'codex';
+  return [process.resourcesPath && join(process.resourcesPath, 'runtime', 'codex'),
+    '/opt/homebrew/bin/codex', '/usr/local/bin/codex'].filter((p): p is string => Boolean(p)).find(existsSync) ?? 'codex';
 }
 
 // macOS GUI apps often lack Homebrew in PATH. The Codex launcher uses
@@ -45,7 +46,7 @@ export function codexArgs(req: LlmRequest, instructionsFile?: string): string[] 
       'memories', 'tool_suggest', 'workspace_dependencies', 'shell_snapshot']
       .flatMap((feature) => ['--disable', feature]),
     '--enable', 'skip_host_skill_discovery',
-    '--enable', 'fast_mode', '-c', 'service_tier="fast"',
+    '--enable', 'fast_mode', '-c', `service_tier=${JSON.stringify(req.serviceTier ?? 'fast')}`,
     '-c', 'suppress_unstable_features_warning=true',
     '-c', 'project_doc_max_bytes=0', '-c', 'web_search="disabled"',
     '-c', `model_reasoning_effort=${JSON.stringify(req.reasoningEffort ?? 'low')}`,

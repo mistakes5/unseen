@@ -1,4 +1,4 @@
-import { app, ipcMain, dialog, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, powerMonitor } from 'electron';
 import { IPC } from '../shared/ipc-contract';
 import type { AnswerPayload, DeepPartial, Settings, QuestionBatch } from '../shared/types';
 import { CLARIFICATION_THRESHOLD } from '../shared/classroom-context';
@@ -49,6 +49,8 @@ import { withOverlayReplay } from './services/overlay-replay';
 import { detectQuestions, QUESTION_PROMPT_VERSION, GENERAL_QUESTION_PROMPT_VERSION } from './services/question-detection';
 import { getSecret } from './services/secrets';
 import { ListeningLimit } from './services/listening-limit';
+import { offerSessionNotes, respondToNotesDialog } from './services/session-notes-ui';
+import { schoolFolders, chooseSchoolFolder } from './services/school-folders';
 
 const detections = new Set<AbortController>();
 const listeningLimits = new Map<number, ListeningLimit>();
@@ -83,6 +85,8 @@ export function registerIpc(): void {
     return getActiveProfile();
   });
   ipcMain.handle(IPC.profilesOpenFolder, () => openProfilesFolder());
+  ipcMain.handle(IPC.schoolFoldersGet, () => schoolFolders());
+  ipcMain.handle(IPC.schoolFolderChoose, (_e, id: string) => chooseSchoolFolder(id));
 
   ipcMain.handle(IPC.providersList, () => ({
     llm: listLlmProviders(),
@@ -273,6 +277,14 @@ export function registerIpc(): void {
     return id;
   });
   ipcMain.on(IPC.sessionEnd, (event, token: number) => listeningLimits.get(event.sender.id)?.stop(token));
+  ipcMain.handle(IPC.sessionNotesOffer, (event, id: string) => {
+    if (typeof id !== 'string' || !/^[a-z0-9-]+\/[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid stopped recording.');
+    return offerSessionNotes(id, BrowserWindow.fromWebContents(event.sender));
+  });
+  ipcMain.handle(IPC.sessionNotesRespond, (event, id: string, action: string) => {
+    if (typeof id !== 'string' || !['create', 'cancel', 'open', 'done'].includes(action)) throw new Error('Invalid notes action.');
+    return respondToNotesDialog(event.sender, id, action);
+  });
   ipcMain.on(IPC.sessionSpeaker, (_e, ev: { speaker: number | null; profileId: string; sessionId: string }) => {
     recordEvent({ t: Date.now(), type: 'speaker-label', label: 'Professor', speaker: ev.speaker, profileId: ev.profileId }, ev.sessionId);
   });

@@ -92,11 +92,7 @@ export const useOverlayStore = create<OverlayState>((set) => ({
           responseKind,
           speaker,
           phase: 'queued' as const,
-          ts: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          }),
+          ts: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
           text: '',
           done: false,
         },

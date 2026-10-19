@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Classroom Copilot app icon: pixel Clawd in a mortarboard on a macOS-style squircle. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5AC8FA"/>
+      <stop offset="1" stop-color="#0A60D6"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <filter id="lift" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="10" flood-color="#06306E" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#drop)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.18"/>
+  <g filter="url(#lift)" shape-rendering="crispEdges">
+    <rect x="296" y="410" width="432" height="252" fill="#D97757"/>
+    <rect x="224" y="518" width="72" height="72" fill="#D97757"/>
+    <rect x="728" y="518" width="72" height="72" fill="#D97757"/>
+    <rect x="332" y="662" width="36" height="72" fill="#D97757"/>
+    <rect x="404" y="662" width="36" height="72" fill="#D97757"/>
+    <rect x="584" y="662" width="36" height="72" fill="#D97757"/>
+    <rect x="656" y="662" width="36" height="72" fill="#D97757"/>
+    <rect x="368" y="482" width="36" height="72" fill="#1A1A1C"/>
+    <rect x="620" y="482" width="36" height="72" fill="#1A1A1C"/>
+    <rect x="332" y="302" width="360" height="36" fill="#3A3A3E"/>
+    <rect x="260" y="338" width="504" height="36" fill="#1A1A1C"/>
+    <rect x="404" y="374" width="216" height="36" fill="#1A1A1C"/>
+    <rect x="728" y="374" width="36" height="72" fill="#FFD60A"/>
+    <rect x="719.0" y="446" width="54.0" height="27.0" fill="#FFD60A"/>
+  </g>
+</svg>

@@ -5,9 +5,19 @@ release/
 .env
 .env.*
 !.env.example
+**/auth.json
+**/secrets.json
+**/credentials.json
+.omp/
+.codex/
+*.p12
+*.pfx
+*.key
 *.local
 .DS_Store
 coverage/
+build/runtime/
+build/runtime-downloads/
 reports/
 
 # local working docs, not part of the OSS repo

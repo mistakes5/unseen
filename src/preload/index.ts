@@ -13,6 +13,7 @@ import type {
   ProfileSummary,
   ProviderInfo,
   SessionMeta,
+  SessionNotesDialog,
   Settings,
   SttDescriptor,
   VerifyResult,
@@ -39,6 +40,8 @@ const api = {
   profilesDelete: (id: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC.profilesDelete, id),
   profilesOpenFolder: (): Promise<void> => ipcRenderer.invoke(IPC.profilesOpenFolder),
+  schoolFoldersGet: (): Promise<Record<string, string>> => ipcRenderer.invoke(IPC.schoolFoldersGet),
+  schoolFolderChoose: (id: string): Promise<string | null> => ipcRenderer.invoke(IPC.schoolFolderChoose, id),
   knowledgeImport: (): Promise<string[]> => ipcRenderer.invoke(IPC.knowledgeImport),
 
   providersList: (): Promise<{ llm: ProviderInfo[]; stt: ProviderInfo[] }> =>
@@ -105,6 +108,13 @@ const api = {
 
   sessionBegin: (listenToken: number): Promise<string> => ipcRenderer.invoke(IPC.sessionBegin, listenToken),
   sessionEnd: (listenToken: number): void => ipcRenderer.send(IPC.sessionEnd, listenToken),
+  sessionNotesOffer: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC.sessionNotesOffer, sessionId),
+  sessionNotesRespond: (id: string, action: 'create' | 'cancel' | 'open' | 'done'): Promise<void> => ipcRenderer.invoke(IPC.sessionNotesRespond, id, action),
+  onSessionNotesDialog: (cb: (dialog: SessionNotesDialog) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, dialog: SessionNotesDialog) => cb(dialog);
+    ipcRenderer.on(IPC.evSessionNotesDialog, handler);
+    return () => { ipcRenderer.removeListener(IPC.evSessionNotesDialog, handler); };
+  },
   onListeningExpired: (cb: (listenToken: number) => void) => ipcRenderer.on(IPC.evListeningExpired, (_e, token: number) => cb(token)),
   sessionSpeaker: (ev: { speaker: number | null; profileId: string; sessionId: string }): void => ipcRenderer.send(IPC.sessionSpeaker, ev),
   sessionRecordFinal: (ev: { text: string; speaker: number; profileId: string; sessionId: string }): void =>

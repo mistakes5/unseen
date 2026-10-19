@@ -23,7 +23,7 @@ export function Transcript(): React.JSX.Element {
         </select>
         {professor !== null && <span className="panel-note">Professor first</span>}
       </label>}
-      {sessionError && <div role="alert" style={{ color: '#ff8080', padding: 8 }}>{sessionError}</div>}
+      {sessionError && <div role="alert" className="inline-alert">{sessionError}</div>}
       <div id="transcript" ref={ref}>
       {turns.length === 0 && !interim ? (
         <span className="placeholder">Waiting for audio…</span>

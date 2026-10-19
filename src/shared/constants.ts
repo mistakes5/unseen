@@ -2,7 +2,7 @@ import type { Settings } from './types';
 
 export const DEFAULT_SETTINGS: Settings = {
   llm: {
-    provider: 'omp-codex',
+    provider: 'codex',
     model: 'gpt-6-luna',
     reasoningEffort: 'low',
     maxTokens: 2000,
@@ -60,7 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   activeProfile: 'political-identities',
   dataDir: '',
-  onboarded: true,
+  onboarded: false,
 };
 
 /** Max bytes of a single knowledge file injected into the prompt. */

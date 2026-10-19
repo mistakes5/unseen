@@ -4,6 +4,34 @@ Read [docs/classroom-setup.md](docs/classroom-setup.md) before configuring a cla
 These are required working instructions for agents, not an application-enforced
 onboarding mechanism. Higher-priority instructions and explicit user choices win.
 
+## Install the prebuilt app first
+
+When a user asks to install, launch, try, or update Classroom Copilot on a Mac,
+use this fork’s **prebuilt GitHub Release**. Do not start a source build, run
+`npm install` / `npm ci`, install OMP, Homebrew, Xcode, or development dependencies,
+or clone upstream as part of ordinary installation. Source builds are only for an
+explicit development request or after reporting that the binary is unavailable.
+Never silently fall back to compiling because a download failed.
+
+1. Download `install-mac.command` from this repository’s `classroom-copilot`
+   branch, inspect it, and run it with Bash. It downloads the complete matching
+   Apple Silicon/Intel app from `mistakes5/unseen` Releases, checks SHA-256 and
+   the signature, installs to `~/Applications`, and requests launch.
+2. Verify the installed `.app` and actual running app/window. An exit-zero
+   download or an `open` request alone does not prove the GUI launched.
+3. If the app is already running, preserve it and its recording. The installer
+   refuses replacement until the user stops the recording and quits normally.
+4. First launch then handles configuration. Ask the unresolved setup questions
+   below; never copy the publisher’s credentials, personal profiles or course data.
+   The native Codex CLI is bundled. No npm/OMP installation is needed.
+5. For transcripts/notes, use **Settings → Profiles → Course folder…** after the
+   user chooses their destination. This enables local saving. **Stop → Create
+   notes** uses all same-profile/day speech with Sol low; Not now sends nothing.
+
+The distributable is not notarized yet. If macOS blocks it, explain the normal
+Privacy & Security review and let the user approve. Never clear quarantine,
+disable Gatekeeper, or use a security bypass. See [install-mac.md](docs/install-mac.md).
+
 ## Required user-question gate
 
 Before creating a new class setup or materially changing an existing one:

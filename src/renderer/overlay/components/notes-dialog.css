@@ -1,0 +1,45 @@
+.notes-shade {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+  padding: 22px; background: rgba(5, 9, 12, .74); backdrop-filter: blur(10px);
+  -webkit-app-region: no-drag;
+}
+.notes-dialog {
+  box-sizing: border-box; width: 100%; max-width: 420px; padding: 27px;
+  border-radius: 24px; border: 1px solid rgba(197, 226, 216, .13);
+  background: radial-gradient(ellipse at 0 0, rgba(62, 127, 102, .12), transparent 64%), #141c1c;
+  color: #edf4f0; box-shadow: 0 32px 100px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .035);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  animation: notes-appear .19s ease-out;
+}
+.notes-dialog-top { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.notes-glyph { width: 42px; height: 46px; border: 1px solid rgba(157, 218, 184, .18); border-radius: 12px; display: grid; place-items: center; color: #acd8bd; background: #23372f; }
+.notes-glyph svg { width: 23px; height: 23px; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+.notes-eyebrow { font-size: 10px; font-weight: 650; letter-spacing: 1.9px; color: #91a69b; }
+.notes-dialog .notes-close { margin-left: auto; padding: 0; width: 28px; height: 28px; border: 0; background: transparent; color: #8a9a93; border-radius: 8px; font-size: 23px; cursor: pointer; }
+.notes-dialog h2 { margin: 0 0 10px; font-size: 25px; line-height: 1.2; letter-spacing: -.8px; font-weight: 600; color: #f0f5f2; }
+.notes-description { margin: 0; font-size: 13px; line-height: 1.65; color: #a4b2ab; max-width: 330px; }
+.notes-course-card { margin-top: 22px; padding: 15px 16px; border-radius: 13px; background: rgba(255,255,255,.035); border: 1px solid rgba(210,232,220,.075); }
+.notes-course-name { display: block; font-size: 12px; line-height: 1.5; font-weight: 550; color: #dce7df; }
+.notes-course-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 11px; line-height: 1.5; margin-top: 5px; color: #8fa397; }
+.notes-course-meta > span { color: #52665a; }
+.notes-model { display: flex; align-items: center; gap: 7px; margin: 17px 1px 0; font-size: 10px; color: #99afa1; }
+.notes-model-dot { width: 5px; height: 5px; background: #96c8a6; border-radius: 50%; }
+.notes-low { margin-left: auto; color: #82978a; font-size: 10px; }
+.notes-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 26px; padding-top: 20px; border-top: 1px solid rgba(215,232,222,.07); }
+.notes-dialog .notes-secondary, .notes-dialog .notes-primary { height: 39px; border-radius: 10px; font: 550 12px -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; transition: background .12s, transform .12s; }
+.notes-dialog .notes-secondary { padding: 0 16px; color: #b2c0b7; background: transparent; border: 1px solid rgba(210,232,220,.12); }
+.notes-dialog .notes-primary { padding: 0 17px; color: #112319; background: #b7d7b9; border: 1px solid #c1dfc3; box-shadow: 0 3px 10px rgba(0,0,0,.12); }
+.notes-primary span { display: inline-block; margin-left: 13px; font-size: 16px; font-weight: 400; }
+.notes-dialog button:hover { filter: brightness(1.1); }
+.notes-dialog button:active { transform: translateY(1px); }
+.notes-dialog button:focus-visible { outline: 2px solid #b7d7b9; outline-offset: 3px; }
+.notes-progress { display: flex; align-items: center; gap: 9px; margin-top: 20px; color: #b6cebd; font-size: 12px; }
+.notes-spinner { width: 12px; height: 12px; border: 1.5px solid rgba(183,215,185,.2); border-top-color: #b7d7b9; border-radius: 50%; animation: notes-spin .8s linear infinite; }
+.notes-progress-dots { margin-left: -8px; }
+.notes-working-hint { font-size: 10px; color: #7d9385; }
+.notes-error { padding: 13px; color: #edc1ad; font-size: 12px; line-height: 1.6; border: 1px solid rgba(237,193,173,.14); background: rgba(237,193,173,.045); border-radius: 11px; margin: 20px 0 0; }
+@keyframes notes-appear { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes notes-spin { to { transform: rotate(360deg); } }
+@media (max-width: 390px) { .notes-shade { padding: 12px; } .notes-dialog { padding: 22px; } .notes-dialog h2 { font-size: 23px; } }
+@media (max-height: 500px) { .notes-shade { overflow-y: auto; place-items: start center; } }
+@media (prefers-reduced-motion: reduce) { .notes-dialog { animation: none; } .notes-spinner { animation-duration: 2s; } }

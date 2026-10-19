@@ -23,6 +23,7 @@ beforeEach(() => {
     settingsGet: async () => structuredClone(DEFAULT_SETTINGS), profilesList: async () => [], profilesGetActive: async () => profile,
     sessionBegin: vi.fn().mockResolvedValue('canadian-politics/test-session'),
     sessionEnd: vi.fn(),
+    sessionNotesOffer: vi.fn().mockResolvedValue(undefined),
     sessionRecordFinal: vi.fn(), sessionRecordQuestion: vi.fn(), sessionRecordStatus: vi.fn(), sessionSpeaker: vi.fn(),
     answerStart: vi.fn().mockResolvedValue({ ok: true }), answerCancel: vi.fn().mockResolvedValue(undefined),
     questionsCancel: vi.fn().mockResolvedValue(undefined),
@@ -65,6 +66,7 @@ it('auto-stop closes transcription, cancels queued AI work, keeps notes, and ign
   expect(c.isListening()).toBe(false);
   expect(mock.stop).toHaveBeenCalledOnce();
   expect(api.sessionEnd).toHaveBeenCalledWith(token);
+  expect(api.sessionNotesOffer).not.toHaveBeenCalled();
   expect(api.answerCancel).toHaveBeenCalled();
   expect(api.questionsCancel).toHaveBeenCalled();
   expect(useOverlayStore.getState().answers[0].text).toBe('It sets out powers.');
@@ -97,6 +99,21 @@ it('pause/resume and reconnect do not restart the deadline and paused sessions s
   listeners.ListeningExpired(token);
   expect(c.isListening()).toBe(false);
   expect(mock.stop).toHaveBeenCalledOnce();
+  expect(api.sessionNotesOffer).not.toHaveBeenCalled();
+});
+
+it('offers notes only after an explicit Stop, using the stopped recording rather than the active profile', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  c.togglePause(); c.togglePause();
+  expect(api.sessionNotesOffer).not.toHaveBeenCalled();
+  c.toggleListening();
+  expect(c.isListening()).toBe(false);
+  expect(mock.stop).toHaveBeenCalledOnce();
+  expect(api.sessionNotesOffer).toHaveBeenCalledWith('canadian-politics/test-session');
+  c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  c.resetClassroomSession();
+  expect(api.sessionNotesOffer).toHaveBeenCalledOnce();
 });
 
 it('an expiry during asynchronous session startup prevents the microphone from opening', async () => {

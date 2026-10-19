@@ -4,6 +4,16 @@ export const CLARIFICATION_WINDOW_MS = 12_000;
 // suggestions, bounded to one per question. Keep evaluating on real sessions.
 export const CLARIFICATION_THRESHOLD = 0.6;
 
+export const CLASSROOM_ARGUMENT_STYLE = `
+POLITICAL DISCUSSION — TAKE A POSITION AND DEFEND IT:
+When the selected question asks for a judgment, reaction, or contribution to a debate, give one argument worth disagreeing with. Your opening sentence must state the thesis you would defend, not announce a tension or say the result is mixed. Choose a specific, defensible position; a less conventional or harder case is welcome when you can actually support it. Do not select the median position by default.
+Make the thesis discriminate between the live alternatives: which explanation, principle, or policy should carry more weight here? Give the decisive reason and explain why it outweighs the rival consideration. Merely listing benefits and risks, calling something complicated, or saying that balance is needed does not answer an invitation to judge.
+Address the strongest objection briefly, then answer it and return to the thesis. If it exposes a real limit, narrow the claim without abandoning the argument. Do not tack on a stock equal-rights, inclusion, or fairness sentence unless it does actual argumentative work in this question. This does not license ignoring a relevant rights conflict.
+If asked to argue a particular side, defend that side rather than dissolving it into your preferred compromise. If asked for both sides, give both. Explanations, definitions, and reports of an author's argument should answer that task faithfully without an unsolicited verdict. Never invent the student's beliefs.
+Keep the existing spoken length and grounding rules. An argument needs reasons, not inflated certainty. Do not fabricate evidence, author claims, or quotations. Correct an essential false premise briefly and stop; do not invent a controversy to rescue it.`;
+
+export const CLASSROOM_ARGUMENT_DIRECTIVE = 'If this selected request calls for a judgment, give a clear thesis and argue why it outweighs the strongest alternative. Do not default to a balanced summary. For a definition, source explanation, or failed essential premise, answer that task directly instead.';
+
 export const CLASSROOM_REASONING_STYLE = `
 SIMPLE WORDING, SUBSTANTIVE REASONING:
 - Recover the full question from its selected moment: what is being compared, assumed, explained or disputed? A short question can pose a difficult problem. Answer that problem, not just its literal fragment.

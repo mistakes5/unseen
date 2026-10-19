@@ -114,6 +114,8 @@ export interface LlmRequest {
   maxTokens: number;
   temperature?: number;
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  /** Per-request CLI tier; does not change application/global settings. */
+  serviceTier?: 'fast' | 'priority';
 }
 
 export type LlmEvent =
@@ -328,4 +330,13 @@ export interface SessionMeta {
   questions?: number;
   profileId?: string;
   profileName?: string;
+}
+
+export interface SessionNotesDialog {
+  id: string;
+  phase: 'confirm' | 'working' | 'saved' | 'error';
+  courseName: string;
+  day: string;
+  recordings: number;
+  error?: string;
 }

@@ -1,6 +1,6 @@
 {
   "name": "unseen",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A photographic memory for everything you say, hear, and write. Open-source, local-first transcription engine with dictation, a meeting copilot, and a self-distilling personal/work memory layer. Swappable LLM/STT providers, profile-driven.",
   "license": "MIT",
   "private": true,
@@ -28,7 +28,9 @@
     "config:restore": "node scripts/config-bundle.mjs restore",
     "setup:doctor": "node scripts/doctor.mjs",
     "verify:installation": "node scripts/verify-installation.mjs",
-    "omp:source": "node scripts/prepare-omp.mjs"
+    "omp:source": "node scripts/prepare-omp.mjs",
+    "release:runtime": "node scripts/prepare-codex-runtime.mjs",
+    "release:mac": "node scripts/package-mac-release.mjs"
   },
   "build": {
     "appId": "local.classroom.copilot",
@@ -40,6 +42,16 @@
       {
         "from": "profiles",
         "to": "profiles"
+      },
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": [
+          "codex",
+          "codex.LICENSE",
+          "codex.NOTICE",
+          "codex-version.json"
+        ]
       }
     ],
     "directories": {

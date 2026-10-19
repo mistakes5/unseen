@@ -1,0 +1,91 @@
+name: Classroom Mac Release
+on:
+  push:
+    tags: ['classroom-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing classroom-v tag to release
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: classroom-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'mistakes5/unseen'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          tag="${TAG_INPUT:-${GITHUB_REF_NAME}}"
+          [[ "$tag" =~ ^classroom-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --verify-tag --draft --title "Classroom Copilot ${tag#classroom-v}" --notes-file docs/mac-release-notes.md
+          fi
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.6.0'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: bash -n install-mac.command
+      - run: npm run build
+      - run: npm run release:runtime -- ${{ matrix.arch }}
+      - run: npm run release:mac -- ${{ matrix.arch }}
+      - name: Verify the full packaged app without recording or sign-in
+        run: |
+          app="release/package-${{ matrix.arch }}/mac/Classroom Copilot.app"
+          if [ '${{ matrix.arch }}' = arm64 ]; then app="release/package-arm64/mac-arm64/Classroom Copilot.app"; fi
+          CLASSROOM_USER_DATA_DIR="$RUNNER_TEMP/classroom-release-check" "$app/Contents/MacOS/Classroom Copilot" --installation-info
+      - name: Upload verified app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" release/assets/Classroom-Copilot-mac-${{ matrix.arch }}.zip release/assets/Classroom-Copilot-mac-${{ matrix.arch }}.zip.sha256 --clobber
+  publish:
+    needs: [prepare, build]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Publish complete release and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          chmod +x install-mac.command
+          cp install-mac.command 'Install Classroom Copilot.command'
+          ditto -c -k --keepParent 'Install Classroom Copilot.command' Install-Classroom-Copilot.zip
+          gh release upload "$RELEASE_TAG" install-mac.command Install-Classroom-Copilot.zip --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

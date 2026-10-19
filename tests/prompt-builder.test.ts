@@ -31,6 +31,22 @@ const baseOpts = {
 };
 
 describe('buildAnswerRequest', () => {
+  it('scopes political argument guidance to course answers, preserving factual tasks and premise checks', () => {
+    for (const id of ['political-identities', 'canadian-politics', 'federalism', 'politics-of-ai']) {
+      const opts = { ...baseOpts, profile: { ...profile, id } };
+      const req = buildAnswerRequest(opts);
+      expect(req.system.at(-1)!.text).toContain('TAKE A POSITION AND DEFEND IT');
+      expect(req.system.at(-1)!.text).toContain('definitions');
+      expect(req.system.at(-1)!.text).toContain('Correct an essential false premise');
+      expect(req.messages[0].content).toContain('If this selected request calls for a judgment');
+      for (const extra of [{ codeMode: true }, { responseKind: 'question-suggestion' as const }]) {
+        const excluded = buildAnswerRequest({ ...opts, ...extra });
+        expect(excluded.system.map(b => b.text).join('')).not.toContain('TAKE A POSITION AND DEFEND IT');
+        expect(excluded.messages[0].content).not.toContain('If this selected request calls for a judgment');
+      }
+    }
+    expect(buildAnswerRequest(baseOpts).system.map(b => b.text).join('')).not.toContain('TAKE A POSITION AND DEFEND IT');
+  });
   it('preserves the original referent separately from newer speech and includes earlier evidence for ordinary answers', () => {
     const req = buildAnswerRequest({ ...baseOpts, detected: true,
       questionContext: 'A college is admitting more students. Why?',

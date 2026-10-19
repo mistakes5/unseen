@@ -51,16 +51,15 @@ export function Wizard({ settings, update }: TabProps): React.JSX.Element {
 
         {step === 'welcome' && (
           <>
-            <h2>Welcome to Unseen 👋</h2>
+            <h2>Welcome to Classroom Copilot</h2>
             <p>
               Unseen listens to your conversations, transcribes them live, and surfaces answers and
               notes in a floating panel. Setup takes about a minute: a transcription key, an AI
               provider, and a profile.
             </p>
             <p className="hint" style={{ marginTop: 10 }}>
-              Everything stays on your machine — transcripts, answers, keys (OS keychain). No
-              telemetry. One ask: recording-consent laws vary, so tell people before transcribing
-              them.
+              Saved transcripts and notes stay on your Mac. Your chosen speech and AI providers
+              receive the audio or text needed for their work. Recording starts only when you press Start.
             </p>
             <div className="row wizard-nav">
               <button className="btn" onClick={next}>Get started →</button>
@@ -195,6 +194,9 @@ export function Wizard({ settings, update }: TabProps): React.JSX.Element {
               ))}
             </div>
             <div className="row wizard-nav">
+              <button className="btn secondary" onClick={() => void window.unseen.schoolFolderChoose(settings.activeProfile)}>
+                Choose course folder…
+              </button>
               <button className="btn" onClick={next}>Next →</button>
             </div>
           </>

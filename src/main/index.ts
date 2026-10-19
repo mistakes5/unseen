@@ -14,13 +14,17 @@ import { userInfo } from 'node:os';
 import { settings } from './services/settings';
 import { ingestNotes } from './services/notes/ingest';
 import { distillToday } from './services/memory/distill';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
 import { stopLocalTranscription } from './services/stt/whisperlivekit';
 import { cancelAnswer } from './services/llm/run-answer';
+import { startSchoolFolderSync } from './services/school-folders';
 
 // Keep this classroom fork separate from any existing Unseen installation.
 app.setName('Classroom Copilot');
-app.setPath('userData', join(app.getPath('appData'), 'Classroom Copilot'));
+if (process.env.CLASSROOM_USER_DATA_DIR) mkdirSync(resolve(process.env.CLASSROOM_USER_DATA_DIR), { recursive: true, mode: 0o700 });
+app.setPath('userData', process.env.CLASSROOM_USER_DATA_DIR
+  ? resolve(process.env.CLASSROOM_USER_DATA_DIR) : join(app.getPath('appData'), 'Classroom Copilot'));
 if (!app.requestSingleInstanceLock()) app.quit();
 
 // Headless scheduler entry: the LaunchAgent relaunches us with `--sync` to run
@@ -37,6 +41,12 @@ async function runHeadlessSync(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  if (process.argv.includes('--installation-info')) {
+    console.log(JSON.stringify({ product: app.getName(), version: app.getVersion(), arch: process.arch,
+      electron: process.versions.electron, bundledCodex: existsSync(join(process.resourcesPath, 'runtime', 'codex')),
+      userData: app.getPath('userData') }));
+    app.quit(); return;
+  }
   if (process.argv.includes('--use-standalone-deepgram')) {
     settings().set({ stt: { provider: 'deepgram' } });
     stopLocalTranscription();
@@ -110,6 +120,7 @@ app.whenReady().then(async () => {
     if (profile.knowledge.files.length && profile.knowledge.files.every(f => f.endsWith('.context.json'))) loadKnowledge(profile);
   }
   registerIpc();
+  startSchoolFolderSync();
   createOverlay();
   // Create the dictation HUD hidden at startup so its controller is already
   // listening when the hotkey fires (no renderer-load race).

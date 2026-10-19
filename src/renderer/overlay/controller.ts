@@ -309,7 +309,13 @@ export function resetClassroomSession(): void {
 
 export function toggleListening(): boolean {
   if (listening) {
+    const stoppedSession = sessionId;
     endListening(); status();
+    // Only the explicit Stop button offers notes. Pause, profile changes,
+    // startup failures and automatic deadlines do not send a model request.
+    if (stoppedSession) void window.unseen.sessionNotesOffer?.(stoppedSession).catch(error => {
+      useOverlayStore.setState({ sessionError: `Could not offer lecture notes: ${String(error)}` });
+    });
   } else {
     cancelWork();
     failedAnswers.clear();

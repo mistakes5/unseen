@@ -29,10 +29,12 @@ const NEW_PROFILE: Profile = {
 
 export function ProfilesTab({ settings, update }: TabProps): React.JSX.Element {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  const [folders, setFolders] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<{ profile: Profile; isNew: boolean } | null>(null);
 
   useEffect(() => {
     void window.unseen.profilesList().then(setProfiles);
+    void window.unseen.schoolFoldersGet().then(setFolders);
     window.unseen.onProfilesChanged(setProfiles);
   }, []);
 
@@ -84,6 +86,10 @@ export function ProfilesTab({ settings, update }: TabProps): React.JSX.Element {
           </div>
           <div className="spacer" />
           {p.id === settings.activeProfile && <span className="badge set">active</span>}
+          <button className="btn secondary" title={folders[p.id] ?? 'Choose where to save transcripts and lecture notes'} onClick={e => {
+            e.stopPropagation();
+            void window.unseen.schoolFolderChoose(p.id).then(path => { if (path) setFolders(old => ({ ...old, [p.id]: path })); });
+          }}>{folders[p.id] ? 'Course folder ✓' : 'Course folder…'}</button>
           <button
             className="btn secondary"
             onClick={(e) => {

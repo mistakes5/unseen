@@ -4,6 +4,12 @@ import { askNow, togglePause, toggleListening, isListening } from './controller'
 import { Transcript } from './components/Transcript';
 import { AnswerFeed } from './components/AnswerFeed';
 import { DetectionStatus } from './components/DetectionStatus';
+import { NotesDialog } from './components/NotesDialog';
+import { ChevronIcon, CloseIcon, EyeIcon, EyeOffIcon, GearIcon, MinusIcon, PauseIcon, PlayIcon, StopIcon } from './components/Icons';
+
+function shortcut(accelerator: string): string {
+  return accelerator.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace('Alt', '⌥').replace(/\+/g, '');
+}
 
 export function App(): React.JSX.Element {
   const status = useOverlayStore((s) => s.status);
@@ -35,43 +41,30 @@ export function App(): React.JSX.Element {
   return (
     <div id="app" style={{ ['--answer-font-size' as never]: `${fontSize + 0.5}px` }}>
       <header>
-        <select
-          className="profile-picker"
-          value={activeProfile?.id ?? ''}
-          onChange={(e) => void onProfileChange(e.target.value)}
-          title={activeProfile?.description}
-        >
-          {profiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.icon} {p.name}
-            </option>
-          ))}
-        </select>
-        <div className="window-controls">
-          <button
-            className={`ghost-btn ${privacyOn ? 'active' : ''}`}
-            title={
-              privacyOn
-                ? 'Privacy Mode ON — this window is hidden from screen capture'
-                : 'Privacy Mode OFF — this window is visible in screen shares'
-            }
-            onClick={() => void window.unseen.setPrivacyMode(!privacyOn)}
-          >
-            {privacyOn ? '🙈' : '👁'}
-          </button>
-          <button className="ghost-btn" title="Minimize" aria-label="Minimize" onClick={() => void window.unseen.overlayMinimize()}>—</button>
-          <button className="ghost-btn" title="Settings" aria-label="Settings" onClick={() => void window.unseen.openSettings()}>⚙</button>
-          <button className="ghost-btn" title="Quit Unseen" aria-label="Quit Unseen" onClick={() => void window.unseen.quit()}>✕</button>
+        <div className="title-stack">
+          <label className="profile-picker">
+            <select
+              aria-label="Course"
+              value={activeProfile?.id ?? ''}
+              onChange={(e) => void onProfileChange(e.target.value)}
+              title={activeProfile?.description}
+            >
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.icon} {p.name}
+                </option>
+              ))}
+            </select>
+            <ChevronIcon />
+          </label>
+          <div className={`capture-status ${captureKind}`} role="status" title={status.text}>
+            <span className={`dot ${captureKind}`} />
+            <span className="status-text">{status.text}</span>
+          </div>
         </div>
-      </header>
-      <div className="capture-bar">
-        <div className="capture-status" role="status">
-          <span className={`dot ${captureKind}`} />
-          <span className="status-text">{status.text}</span>
-        </div>
-        <div className="capture-actions">
+        <div className="toolbar">
           <button
-            className={`ghost-btn ${listening ? 'active' : ''}`}
+            className={`capsule-btn ${listening ? 'stop' : 'start'}`}
             title={listening ? 'Stop listening — automatically stops 3 hours after Start' : 'Start listening — automatically stops after 3 hours'}
             onClick={() => {
               const now = toggleListening();
@@ -79,43 +72,61 @@ export function App(): React.JSX.Element {
               if (!now) setPaused(false);
             }}
           >
-            {listening ? '⏹ Stop' : '▶ Start'}
+            {listening ? <><StopIcon /> Stop</> : <><PlayIcon /> Start</>}
           </button>
           {listening && (
             <button
-              className="ghost-btn"
+              className={`icon-btn ${paused ? 'active' : ''}`}
+              aria-label={paused ? 'Resume listening' : 'Pause listening'}
               title="Pause/resume listening"
               onClick={() => setPaused(togglePause())}
             >
-              {paused ? '▶' : '⏸'}
+              {paused ? <PlayIcon /> : <PauseIcon />}
             </button>
           )}
-          <button className="ghost-btn" title="Answer the latest thing said" onClick={askNow}>
+          <button className="capsule-btn" title="Answer the latest thing said" onClick={askNow}>
             Ask now
           </button>
+          <span className="toolbar-divider" />
+          <button
+            className={`icon-btn ${privacyOn ? 'active' : ''}`}
+            aria-label={privacyOn ? 'Privacy Mode on' : 'Privacy Mode off'}
+            title={
+              privacyOn
+                ? 'Privacy Mode ON — this window is hidden from screen capture'
+                : 'Privacy Mode OFF — this window is visible in screen shares'
+            }
+            onClick={() => void window.unseen.setPrivacyMode(!privacyOn)}
+          >
+            {privacyOn ? <EyeOffIcon /> : <EyeIcon />}
+          </button>
+          <button className="icon-btn" title="Settings" aria-label="Settings" onClick={() => void window.unseen.openSettings()}><GearIcon /></button>
+          <button className="icon-btn" title="Minimize" aria-label="Minimize" onClick={() => void window.unseen.overlayMinimize()}><MinusIcon /></button>
+          <button className="icon-btn quit" title="Quit Unseen" aria-label="Quit Unseen" onClick={() => void window.unseen.quit()}><CloseIcon /></button>
         </div>
-      </div>
+      </header>
 
       <Transcript />
       <DetectionStatus />
 
-      <div className="section-label">Answers</div>
       <AnswerFeed />
 
       <footer>
-        <span>
-          {settings
-            ? `${settings.hotkeys.toggleVisibility.replace('CommandOrControl', '⌘')} hide · ${settings.hotkeys.askNow.replace('CommandOrControl', '⌘')} ask`
-            : ''}
+        <span className="hotkeys">
+          {settings && <>
+            <kbd>{shortcut(settings.hotkeys.toggleVisibility)}</kbd> hide
+            <kbd>{shortcut(settings.hotkeys.askNow)}</kbd> ask
+          </>}
         </span>
         <span className="cost">
           {usage
-            ? `in ${usage.inputTokens} · out ${usage.outputTokens}${
-                sessionCost > 0 ? ` · ~$${sessionCost.toFixed(4)}` : ''
+            ? `${usage.inputTokens.toLocaleString()} in, ${usage.outputTokens.toLocaleString()} out${
+                sessionCost > 0 ? `, ~$${sessionCost.toFixed(4)}` : ''
               }`
-            : '—'}
+            : ''}
         </span>
       </footer>
+      <NotesDialog />
     </div>
   );
 }
