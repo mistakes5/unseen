@@ -1,5 +1,16 @@
 # Automatic school-folder copies
 
+In the prebuilt Mac app, use **Settings → Profiles → Course folder…**. The app
+handles ten-second transcript copies itself while open, including a final copy
+on normal quit. No Node installation, source checkout or extra service is needed.
+The selected course folder is also where approved lecture notes are saved.
+
+## Optional standalone follower
+
+The following command is for existing advanced installations that already use a
+separate follower. The packaged app preserves such an installed follower rather
+than starting a second writer. It is not part of the ordinary Mac install path.
+
 `scripts/sync-school-transcripts.mts` follows the app's existing saved-session
 archives without interrupting capture or opening a microphone. It makes local
 copies only; no AI calls, cleanup, audio replay, or network requests are made.
