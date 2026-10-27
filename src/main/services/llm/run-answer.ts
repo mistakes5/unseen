@@ -87,6 +87,13 @@ export async function runAnswer(sender: WebContents, payload: AnswerPayload): Pr
       memory: [...loadMemoryFacts(namespaces), ...loadWatchedMarkdown(namespaces)], settings: cfg, ...payload,
       ...(isSuggestion ? { earlierLecture: lectureDraftContext(getLectureHistory(profile.id), payload.newSegment + '\n' + payload.fullTranscript.slice(-1500)) }
         : isParticipationCourse(profile.id) ? { earlierLecture: lectureExpansionContext(getLectureHistory(profile.id, lectureCutoff), payload.question ?? payload.newSegment, payload.questionContext ?? payload.fullTranscript, 6000) } : {}) });
+    if (original) {
+      // Snapshots preserve question/evidence, not a stale provider's model ID.
+      // A follow-up starts under the answer settings selected at dispatch time.
+      request.model = profile.llm?.model ?? cfg.llm.model;
+      request.reasoningEffort = cfg.llm.reasoningEffort;
+      request.temperature = profile.llm?.temperature ?? cfg.llm.temperature ?? undefined;
+    }
     const chain = [cfg.llm.provider, ...cfg.llm.fallbacks.filter(f => f !== cfg.llm.provider)];
     let lastError = '';
     for (const providerId of chain) {

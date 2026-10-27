@@ -17,14 +17,19 @@ const mocks = vi.hoisted(() => ({
   sources: vi.fn<() => ExpansionSourcesConfig>(() => ({ version: 1, indexes: [], transcriptProfiles: [] })),
   indexes: vi.fn<() => ExpansionCorpus[]>(() => []),
   novelty: vi.fn(),
+  providerIds: [] as string[],
 }));
 vi.mock('../src/main/services/settings', () => ({ settings: () => ({ get: () => mocks.config }) }));
 vi.mock('../src/main/services/secrets', () => ({ getSecret: (...args: unknown[]) => mocks.key(...args) }));
 vi.mock('../src/main/services/question-detection', () => ({ detectQuestion: (...args: unknown[]) => mocks.detect(...args) }));
 vi.mock('../src/main/services/profiles', () => ({ getActiveProfile: () => ({ memory: { namespaces: [] }, id: 'political-identities' }) }));
 vi.mock('../src/main/services/knowledge', () => ({ loadKnowledge: mocks.knowledge, loadMemoryFacts: () => [], loadWatchedMarkdown: () => [] }));
-vi.mock('../src/main/services/prompt-builder', () => ({ buildAnswerRequest: () => ({ model: 'gpt-5.6-luna', system: [], messages: [], maxTokens: 2000, reasoningEffort: 'low' }) }));
-vi.mock('../src/main/services/llm/registry', () => ({ getLlmProvider: () => ({ stream: mocks.stream }), providerContext: () => ({}) }));
+vi.mock('../src/main/services/prompt-builder', () => ({ buildAnswerRequest: (opts: { settings: typeof DEFAULT_SETTINGS }) => ({
+  model: opts.settings.llm.model, system: [], messages: [], maxTokens: 2000, reasoningEffort: opts.settings.llm.reasoningEffort,
+}) }));
+vi.mock('../src/main/services/llm/registry', () => ({ getLlmProvider: (id: string) => {
+  mocks.providerIds.push(id); return { stream: mocks.stream };
+}, providerContext: () => ({}) }));
 vi.mock('../src/main/services/sessions', () => ({ recordEvent: (...args: unknown[]) => mocks.record(...args), getLectureHistory: mocks.history,
   getExpansionArchiveCorpora: mocks.archives }));
 vi.mock('../src/main/services/expansion-sources', () => ({ loadExpansionSourcesConfig: mocks.sources, loadExpansionIndexCorpora: mocks.indexes }));
@@ -38,6 +43,7 @@ describe('classroom Jev → answer flow', () => {
   beforeEach(() => {
     cancelAnswer();
     vi.clearAllMocks();
+    mocks.providerIds.length = 0;
     mocks.config = structuredClone(DEFAULT_SETTINGS);
     mocks.sources.mockReturnValue({ version: 1, indexes: [], transcriptProfiles: [] });
     mocks.indexes.mockReturnValue([]);
@@ -112,7 +118,7 @@ describe('classroom Jev → answer flow', () => {
     mocks.detect.mockResolvedValue(0.95);
     const send = vi.fn();
     await runAnswer({ send } as unknown as WebContents, payload);
-    expect(mocks.stream).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-luna', reasoningEffort: 'low' }), expect.anything());
+    expect(mocks.stream).toHaveBeenCalledWith(expect.objectContaining({ model: mocks.config.llm.model, reasoningEffort: mocks.config.llm.reasoningEffort }), expect.anything());
     expect(send).toHaveBeenCalledWith('answer:delta', 'A suggested contribution.');
     expect(mocks.novelty).not.toHaveBeenCalled();
     expect(mocks.history).toHaveBeenCalledWith('political-identities', expect.any(Number));
@@ -241,4 +247,57 @@ describe('classroom Jev → answer flow', () => {
     expect(req.messages.at(-2).content).toBe('Skepticism — questioning universal claims.');
     expect(req.messages.some((m: any) => m.content.includes('Key terms for the chart.'))).toBe(true);
   });
+});
+
+it('keeps an in-flight endpoint answer on its provider while the next answer uses OMP', async () => {
+  cancelAnswer(); vi.clearAllMocks(); mocks.providerIds.length = 0;
+  mocks.config = structuredClone(DEFAULT_SETTINGS);
+  mocks.config.llm.provider = 'openai-compatible'; mocks.config.llm.model = 'glm'; mocks.config.llm.fallbacks = [];
+  let release!: () => void;
+  let calls = 0;
+  mocks.stream.mockImplementation(async function* () {
+    const call = ++calls;
+    if (call === 1) await new Promise<void>(resolve => { release = resolve; });
+    yield { type: 'delta', text: call === 1 ? 'Endpoint answer.' : 'OMP answer.' };
+  });
+  const send = vi.fn(); const sender = { send, id: 700 } as unknown as WebContents;
+  const first = runAnswer(sender, { ...payload, detected: true, requestId: 'endpoint-flight', sessionId: 'political-identities/hotswap' });
+  expect(mocks.providerIds).toEqual(['openai-compatible']);
+  // SettingsStore replaces its immutable merged object when the user switches.
+  mocks.config = { ...mocks.config, llm: { ...mocks.config.llm, provider: 'omp-codex', model: 'gpt-6-luna', reasoningEffort: 'low' } };
+  await runAnswer(sender, { ...payload, detected: true, requestId: 'omp-next', sessionId: 'political-identities/hotswap' });
+  expect(mocks.providerIds).toEqual(['openai-compatible', 'omp-codex']);
+  expect(send).toHaveBeenCalledWith('answer:delta', { requestId: 'omp-next', text: 'OMP answer.' });
+  release(); await first;
+  expect(send).toHaveBeenCalledWith('answer:delta', { requestId: 'endpoint-flight', text: 'Endpoint answer.' });
+  expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ questionId: 'endpoint-flight', timing: expect.objectContaining({ provider: 'openai-compatible' }) }), 'political-identities/hotswap');
+  expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ questionId: 'omp-next', timing: expect.objectContaining({ provider: 'omp-codex' }) }), 'political-identities/hotswap');
+});
+
+it.each([
+  ['openai-compatible', 'glm', 'omp-codex', 'gpt-6-luna', 'expand'],
+  ['openai-compatible', 'glm', 'omp-codex', 'gpt-6-luna', 'refine'],
+  ['omp-codex', 'gpt-6-luna', 'openai-compatible', 'glm', 'expand'],
+  ['omp-codex', 'gpt-6-luna', 'openai-compatible', 'glm', 'refine'],
+])('uses current model for %s/%s → %s/%s %s while preserving original context', async (from, fromModel, to, toModel, kind) => {
+  cancelAnswer(); vi.clearAllMocks(); mocks.providerIds.length = 0;
+  mocks.config = structuredClone(DEFAULT_SETTINGS);
+  mocks.config.llm = { ...mocks.config.llm, provider: from, model: fromModel, fallbacks: [] };
+  mocks.stream.mockImplementation(async function* () { yield { type: 'delta', text: 'Original checked explanation.' }; });
+  const sender = { send: vi.fn(), id: 701 } as unknown as WebContents;
+  const id = `switch-${from}-${kind}`;
+  await runAnswer(sender, { ...payload, detected: true, requestId: id,
+    question: 'Original case question', fullTranscript: 'Original case context', sessionId: 'political-identities/model-switch' });
+  expect(mocks.stream.mock.calls[0][0].model).toBe(fromModel);
+  mocks.config = { ...mocks.config, llm: { ...mocks.config.llm, provider: to, model: toModel, reasoningEffort: 'low' } };
+  await runAnswer(sender, { ...payload, detected: true, requestId: `${id}-followup`,
+    ...(kind === 'expand' ? { expandAnswerId: id } : { refineAnswerId: id, clarification: 'Compare the two alternatives.' }),
+    question: 'Unrelated new question', fullTranscript: 'Unrelated new context' });
+  expect(mocks.providerIds).toEqual([from, to]);
+  const followup = mocks.stream.mock.calls[1][0];
+  expect(followup.model).toBe(toModel);
+  expect(followup.reasoningEffort).toBe('low');
+  expect(JSON.stringify(followup.messages)).toContain('Original checked explanation.');
+  expect(JSON.stringify(followup.messages)).not.toContain('Unrelated new question');
+  expect(mocks.record).toHaveBeenLastCalledWith(expect.objectContaining({ questionId: id, question: 'Original case question' }), 'political-identities/model-switch');
 });
