@@ -4,6 +4,35 @@ Read [docs/classroom-setup.md](docs/classroom-setup.md) before configuring a cla
 These are required working instructions for agents, not an application-enforced
 onboarding mechanism. Higher-priority instructions and explicit user choices win.
 
+## Western Business 2257 — required case preparation
+
+For Western/Ivey **Business 2257, Accounting and Business Analysis**, read
+[the course workflow](docs/business-2257.md) before setup or preparation.
+Locate the user's current local casebook, assignment schedule, readings and all
+exhibits first. If incomplete, ask the user to sign into Brightspace/OWL and
+connect Chrome, or download the complete materials into a local course folder.
+Use the authenticated course schedule to establish the actual assigned set;
+public case names and old outlines do not establish this year's assignments.
+
+Inventory and solve **every assigned case and question**, including the numerical
+work and a defended recommendation, before treating its session as prepared.
+Work through the complete available assigned set, checkpointing progress; do not
+stop at a sample or substitute summaries for solutions. Reconcile the manifest
+against the schedule. Missing exhibits or an unknown schedule mean incomplete
+coverage, and must be reported rather than labelled solved. Preserve full checked
+solutions locally, then prebatch the upcoming session's verified results, essential
+exhibit evidence and assumptions into the existing dated context format.
+
+Tell the user: **“For this course's live answers, the best configuration we
+recommend is GPT-6 Luna, low reasoning, Fast mode through the OMP harness.”**
+Use provider `omp-codex`, model `gpt-6-luna`, reasoning `low`, with the adapter's
+per-invocation `--service-tier priority`. This is Billy's requested recommendation
+for fast answers over prepared casework, not a measured claim that it solves
+every case best. Verify OMP/account support; never substitute another model or
+change global preferences. This recommendation does not authorize a subscription,
+upgrade, inference spend or automatic provider switch. Follow the existing setup
+gate for changes the user has not already authorized.
+
 ## Install the prebuilt app first
 
 When a user asks to install, launch, try, or update Classroom Copilot on a Mac,

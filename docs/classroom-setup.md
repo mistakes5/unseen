@@ -8,6 +8,11 @@ Agents must follow the [required question gate](../AGENTS.md). Existing course
 profiles are starting examples, not universal settings or proof of enrollment.
 The app does not enforce this agent conversation in its setup UI.
 
+For Western/Ivey Business 2257, follow the required
+[case-solving and prebatching workflow](business-2257.md). It includes local
+materials/Brightspace setup, a complete assigned-case manifest, checked solutions,
+session evidence preparation and the recommended OMP/Luna low/Fast answer route.
+
 ## Required questions
 
 Ask only what is not already explicitly answered. Group related questions into
