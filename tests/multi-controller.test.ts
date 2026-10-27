@@ -246,14 +246,14 @@ it('sends completed questions at 250ms but still saves speech and waits 750ms fo
 });
 
 it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of-ai'].flatMap(id =>
-  ['done', 'answering'].map(phase => ({ id, phase }))))('refines a $phase answer for $id once in the same card', async ({ id, phase }) => {
+  ['done', 'answering'].map(phase => ({ id, phase }))))('coalesces clarifications into the same $phase card for $id', async ({ id, phase }) => {
   api.profilesGetActive = async () => ({ ...profile, id });
   api.sessionBegin.mockResolvedValue(`${id}/test-session`);
   const c = await import('../src/renderer/overlay/controller');
   const { useOverlayStore } = await import('../src/renderer/overlay/store');
   api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => [
-    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1 })),
-    ...(batch.recentQuestion ? [{ id: batch.recentQuestion.id, probability: 0.95, kind: 'clarification' }] : []),
+    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1,
+      ...(batch.recentQuestion ? { route: { action: 'update', targetId: batch.recentQuestion.id, probability: .95 } } : {}) })),
   ]);
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'What attributes describe postmodernism?', speaker: 0 });
@@ -268,6 +268,7 @@ it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of
     expect(api.answerStart).toHaveBeenCalledOnce();
     listeners.AnswerDone({ requestId: q.requestId, usage: null });
   }
+  await vi.advanceTimersByTimeAsync(1001);
   const revision = api.answerStart.mock.calls[1][0];
   expect(revision.refineAnswerId).toBe(q.requestId);
   expect(revision.clarification).toContain('quadrants');
@@ -278,17 +279,22 @@ it.each(['canadian-politics', 'political-identities', 'federalism', 'politics-of
   expect(useOverlayStore.getState().answers[0]).toMatchObject({ id: q.requestId, refinement: 'done', text: 'Skepticism — questioning universal claims.' });
   mock.opts!.onEvent({ type: 'final', text: 'Compared with liberalism.', speaker: 0 });
   await vi.advanceTimersByTimeAsync(751);
-  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1001);
+  const nextRevision = api.answerStart.mock.calls[2][0];
+  expect(nextRevision.refineAnswerId).toBe(q.requestId);
+  expect(nextRevision.clarification).toContain('Compared with liberalism');
+  listeners.AnswerDelta({ requestId: nextRevision.requestId, text: 'Updated comparison.' });
+  listeners.AnswerDone({ requestId: nextRevision.requestId, usage: null });
   c.expandAnswer(q.requestId);
-  expect(api.answerStart.mock.calls[2][0].expandAnswerId).toBe(q.requestId);
+  expect(api.answerStart.mock.calls[3][0].expandAnswerId).toBe(q.requestId);
 });
 
 it('keeps the original after a failed refinement and ignores refinement output after stop', async () => {
   const c = await import('../src/renderer/overlay/controller');
   const { useOverlayStore } = await import('../src/renderer/overlay/store');
   api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => [
-    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1 })),
-    ...(batch.recentQuestion ? [{ id: batch.recentQuestion.id, probability: 0.95, kind: 'clarification' }] : []),
+    ...batch.candidates.map(q => ({ id: q.id, probability: q.text.startsWith('What') ? 0.99 : 0.1,
+      ...(batch.recentQuestion ? { route: { action: 'update', targetId: batch.recentQuestion.id, probability: .95 } } : {}) })),
   ]);
   await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
   mock.opts!.onEvent({ type: 'final', text: 'What attributes?', speaker: 0 });
@@ -298,6 +304,7 @@ it('keeps the original after a failed refinement and ignores refinement output a
   listeners.AnswerDone({ requestId: q.requestId, usage: null });
   mock.opts!.onEvent({ type: 'final', text: 'A term for this chart.', speaker: 0 });
   await vi.advanceTimersByTimeAsync(751);
+  await vi.advanceTimersByTimeAsync(1001);
   const revision = api.answerStart.mock.calls[1][0];
   listeners.AnswerDelta({ requestId: revision.requestId, text: 'Partial failed update' });
   listeners.AnswerError({ requestId: revision.requestId, error: 'Network unavailable' });
@@ -322,7 +329,7 @@ it('expires the clarification window and does not refine an independent question
   mock.opts!.onEvent({ type: 'final', text: 'Moving to the next topic.', speaker: 0 });
   await vi.advanceTimersByTimeAsync(751);
   expect(api.answerStart).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(12000);
+  await vi.advanceTimersByTimeAsync(30000);
   mock.opts!.onEvent({ type: 'final', text: 'A label for this chart.', speaker: 0 });
   await vi.advanceTimersByTimeAsync(751);
   expect(api.questionsDetect.mock.calls.at(-1)[0].recentQuestion).toBeUndefined();
@@ -590,4 +597,159 @@ it('queues retries behind active work and preserves their transcript while waiti
   listeners.AnswerDone({ requestId: second.requestId, usage: null });
   expect(api.answerStart).toHaveBeenCalledTimes(4);
   expect(api.answerStart.mock.calls[3][0]).toEqual({ ...original, requestId: expect.any(String) });
+});
+
+it('coalesces a burst before dispatch, keeps an independent question, and logs links', async () => {
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map((q, i) => ({
+    id: q.id, probability: .99,
+    ...(i === 1 || i === 2 ? { route: { targetId: batch.candidates[i - 1].id, action: 'update', probability: .98 } } : {}),
+  })));
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'Is this claim misleading? Is it an error? Or deliberate deception? Who appoints the judges?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  const first = api.answerStart.mock.calls[0][0];
+  expect(first.question).toBe('Is this claim misleading?');
+  expect(first.clarification).toContain('Is it an error?');
+  expect(first.clarification).toContain('Or deliberate deception?');
+  expect(first.clarification).not.toContain('judges');
+  expect(useOverlayStore.getState().answers).toHaveLength(2);
+  expect(useOverlayStore.getState().answers.find(a => a.id === first.requestId)?.continuations).toHaveLength(2);
+  expect(api.sessionRecordStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'merged', relatedQuestionId: first.requestId }));
+});
+
+it('accumulates updates during an answer and during its revision; repeats do not send another prompt', async () => {
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map(q => ({ id: q.id, probability: .99,
+    ...(batch.recentQuestion ? { route: { targetId: batch.recentQuestion.id,
+      action: q.text.startsWith('Again') ? 'repeat' : 'update', probability: .98 } } : {}),
+  })));
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  const say = async (text: string) => { mock.opts!.onEvent({ type: 'final', text, speaker: 0 }); await vi.advanceTimersByTimeAsync(751); };
+  await say('How should this claim be classified?');
+  const first = api.answerStart.mock.calls[0][0];
+  await say('Consider whether it is intentional.');
+  await say('Also compare the evidence available.');
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(api.answerStart).toHaveBeenCalledOnce();
+  listeners.AnswerDelta({ requestId: first.requestId, text: 'Original answer.' });
+  listeners.AnswerDone({ requestId: first.requestId, usage: null });
+  await vi.advanceTimersByTimeAsync(1001);
+  const revision = api.answerStart.mock.calls[1][0];
+  expect(revision.clarification).toContain('intentional');
+  expect(revision.clarification).toContain('evidence available');
+  await say('Use the counterexample as well.');
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  listeners.AnswerDelta({ requestId: revision.requestId, text: 'Revised answer.' });
+  listeners.AnswerDone({ requestId: revision.requestId, usage: null });
+  await vi.advanceTimersByTimeAsync(1001);
+  const next = api.answerStart.mock.calls[2][0];
+  expect(next.refineAnswerId).toBe(first.requestId);
+  expect(next.clarification).toContain('counterexample');
+  listeners.AnswerDelta({ requestId: next.requestId, text: 'Final answer.' });
+  listeners.AnswerDone({ requestId: next.requestId, usage: null });
+  await say('Again, how would you classify that same claim?');
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(api.answerStart).toHaveBeenCalledTimes(3);
+  expect(useOverlayStore.getState().answers).toHaveLength(1);
+  expect(useOverlayStore.getState().answers[0].text).toBe('Final answer.');
+  expect(api.sessionRecordStatus).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'repeated', relatedQuestionId: first.requestId }));
+});
+
+it('folds updates into queued work without spending another answer call', async () => {
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map(q => ({ id: q.id, probability: .99,
+    ...(q.text.startsWith('Include') && batch.recentQuestion ? { route: { targetId: batch.recentQuestion.id, action: 'update', probability: .99 } } : {}),
+  })));
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  for (const text of ['Who governs?', 'Who pays?', 'What is the mechanism?', 'Include one counterexample.']) {
+    mock.opts!.onEvent({ type: 'final', text, speaker: 0 }); await vi.advanceTimersByTimeAsync(751);
+  }
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  const first = api.answerStart.mock.calls[0][0];
+  listeners.AnswerDelta({ requestId: first.requestId, text: 'First answer.' });
+  listeners.AnswerDone({ requestId: first.requestId, usage: null });
+  const queued = api.answerStart.mock.calls[2][0];
+  expect(queued.question).toBe('What is the mechanism?');
+  expect(queued.clarification).toContain('counterexample');
+  listeners.AnswerDelta({ requestId: queued.requestId, text: 'Mechanism and counterexample.' });
+  listeners.AnswerDone({ requestId: queued.requestId, usage: null });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(api.answerStart).toHaveBeenCalledTimes(3);
+});
+
+it('does not lose a new question when its proposed parent fails during detection', async () => {
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'What makes this legitimate?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const first = api.answerStart.mock.calls[0][0];
+  let finish!: (r: unknown) => void;
+  api.questionsDetect.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  mock.opts!.onEvent({ type: 'final', text: 'Is it democratically legitimate?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const batch = api.questionsDetect.mock.calls.at(-1)[0];
+  listeners.AnswerError({ requestId: first.requestId, error: 'Network failure.' });
+  finish([{ id: batch.candidates[0].id, probability: .99, route: { targetId: first.requestId, action: 'update', probability: .99 } }]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  expect(api.answerStart.mock.calls[1][0].question).toBe('Is it democratically legitimate?');
+});
+
+it('cancels pending revisions on course change, preserving the archived continuation', async () => {
+  api.questionsDetect.mockImplementation(async (batch: QuestionBatch) => batch.candidates.map(q => ({ id: q.id, probability: .99,
+    ...(batch.recentQuestion ? { route: { targetId: batch.recentQuestion.id, action: 'update', probability: .99 } } : {}),
+  })));
+  const c = await import('../src/renderer/overlay/controller');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  mock.opts!.onEvent({ type: 'final', text: 'Which explanation fits?', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  const first = api.answerStart.mock.calls[0][0];
+  listeners.AnswerDelta({ requestId: first.requestId, text: 'Original.' });
+  listeners.AnswerDone({ requestId: first.requestId, usage: null });
+  mock.opts!.onEvent({ type: 'final', text: 'Compare both explanations.', speaker: 0 });
+  await vi.advanceTimersByTimeAsync(751);
+  c.resetClassroomSession();
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(api.answerStart).toHaveBeenCalledOnce();
+  expect(api.sessionRecordStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'merged' }));
+});
+
+it('hot-swaps the answer route during recording without restarting STT or changing session identity', async () => {
+  const initial = { ...structuredClone(DEFAULT_SETTINGS), activeProfile: profile.id };
+  initial.llm.provider = 'openai-compatible'; initial.llm.model = 'glm';
+  api.settingsGet = async () => initial;
+  const c = await import('../src/renderer/overlay/controller');
+  const { useOverlayStore } = await import('../src/renderer/overlay/store');
+  await c.initController(); c.toggleListening(); await vi.advanceTimersByTimeAsync(1);
+  for (const text of ['Who governs?', 'Who pays?', 'What is the mechanism?']) {
+    mock.opts!.onEvent({ type: 'final', text, speaker: 0 }); await vi.advanceTimersByTimeAsync(751);
+  }
+  const first = api.answerStart.mock.calls[0][0];
+  expect(api.answerStart).toHaveBeenCalledTimes(2);
+  const next = structuredClone(initial);
+  next.llm.provider = 'omp-codex'; next.llm.model = 'gpt-6-luna'; next.llm.reasoningEffort = 'low';
+  await listeners.SettingsChanged(next);
+  expect(c.isListening()).toBe(true);
+  expect(mock.start).toHaveBeenCalledOnce();
+  expect(mock.stop).not.toHaveBeenCalled();
+  expect(api.sessionBegin).toHaveBeenCalledOnce();
+  expect(api.sessionEnd).not.toHaveBeenCalled();
+  expect(api.answerCancel).toHaveBeenCalledTimes(1); // initial session reset only
+  expect(api.questionsCancel).toHaveBeenCalledTimes(1);
+  expect(useOverlayStore.getState().settings?.llm).toMatchObject({ provider: 'omp-codex', model: 'gpt-6-luna', reasoningEffort: 'low' });
+  listeners.AnswerDelta({ requestId: first.requestId, text: 'Old route completes normally.' });
+  listeners.AnswerDone({ requestId: first.requestId, usage: null });
+  expect(api.answerStart).toHaveBeenCalledTimes(3);
+  expect(api.answerStart.mock.calls[2][0].sessionId).toBe(first.sessionId);
+  expect(useOverlayStore.getState().turns.length).toBeGreaterThan(0);
+  expect(useOverlayStore.getState().answers.find(a => a.id === first.requestId)?.text).toBe('Old route completes normally.');
+  const recordedBefore = api.sessionRecordFinal.mock.calls.length;
+  mock.opts!.onEvent({ type: 'final', text: 'Does the next question still save?', speaker: 0 });
+  expect(api.sessionRecordFinal).toHaveBeenCalledTimes(recordedBefore + 1);
+  expect(api.sessionRecordFinal.mock.calls.at(-1)[0].sessionId).toBe(first.sessionId);
 });

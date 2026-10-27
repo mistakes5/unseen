@@ -183,7 +183,7 @@ export interface AnswerPayload {
   questionContext?: string;
   /** Expand a completed answer using its main-process context snapshot. */
   expandAnswerId?: string;
-  /** One bounded short-answer revision using later clarifying speech. */
+  /** Revise the same answer using accumulated later clarifying speech. */
   refineAnswerId?: string;
   clarification?: string;
   requestId?: string;
@@ -216,12 +216,14 @@ export interface QuestionCandidate {
   /** Speech finalized shortly after the candidate, while the routing timer settles. */
   followingContext?: string;
   priority?: number;
+  clarification?: string;
 }
 
 export interface QuestionBatch {
   profileId: string;
   sessionId?: string;
   candidates: QuestionCandidate[];
+  coalesce?: boolean;
   recentQuestion?: { id: string; text: string; context: string; followingSpeech: string };
   questionSuggestions?: { mode: 'invitations' | 'openings'; recentDrafts: string[] };
 }
@@ -230,6 +232,7 @@ export interface QuestionJudgment {
   id: string;
   probability: number;
   kind?: 'clarification' | 'question-suggestion';
+  route?: { action: 'repeat' | 'update'; targetId: string; probability: number };
 }
 
 // ---- Profiles (validated shape; schema lives in profile-schema.ts) ----
@@ -299,12 +302,12 @@ export interface DistillResult {
 // ---- Sessions ----
 
 export type SessionEvent =
-  | { t: number; type: 'question-check'; questionId: string; profileId: string; text: string; probability: number; threshold: number; passed: boolean; elapsedMs: number; promptVersion: string }
+  | { t: number; type: 'question-check'; questionId: string; profileId: string; text: string; probability: number; threshold: number; passed: boolean; elapsedMs: number; promptVersion: string; route?: QuestionJudgment['route'] }
   | { t: number; type: 'speaker-label'; speaker: number | null; label: 'Professor'; profileId: string }
   | { t: number; type: 'start'; version: string; profileId?: string; profileName?: string }
   | { t: number; type: 'final'; text: string; speaker: number; profileId?: string }
   | { t: number; type: 'question'; text: string; questionId: string; profileId: string; speaker?: number }
-  | { t: number; type: 'answer-status'; questionId: string; profileId: string; status: 'cancelled' | 'error' | 'skipped'; text: string }
+  | { t: number; type: 'answer-status'; questionId: string; profileId: string; status: 'cancelled' | 'error' | 'skipped' | 'merged' | 'repeated'; text: string; relatedQuestionId?: string }
   | {
       t: number;
       type: 'answer';

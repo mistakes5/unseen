@@ -1,5 +1,8 @@
 /** Product bounds, not model accuracy guarantees. Keep initial answering fast. */
-export const CLARIFICATION_WINDOW_MS = 12_000;
+export const CLARIFICATION_WINDOW_MS = 30_000;
+// Conservative grouping gate; keep uncertain/new requests independently answerable.
+export const QUESTION_ROUTE_THRESHOLD = 0.8;
+export const REFINEMENT_SETTLE_MS = 1_000;
 // Tuned on late chart cues vs. student answers/new topics; revisions are harmless
 // suggestions, bounded to one per question. Keep evaluating on real sessions.
 export const CLARIFICATION_THRESHOLD = 0.6;

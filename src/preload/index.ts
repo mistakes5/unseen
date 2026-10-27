@@ -120,7 +120,7 @@ const api = {
   sessionRecordFinal: (ev: { text: string; speaker: number; profileId: string; sessionId: string }): void =>
     ipcRenderer.send(IPC.sessionFinal, ev),
   sessionRecordQuestion: (ev: { text: string; speaker: number; profileId: string; sessionId: string; questionId: string }): void => ipcRenderer.send(IPC.sessionQuestion, ev),
-  sessionRecordStatus: (ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' }): void => ipcRenderer.send(IPC.sessionStatus, ev),
+  sessionRecordStatus: (ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' | 'merged' | 'repeated'; relatedQuestionId?: string }): void => ipcRenderer.send(IPC.sessionStatus, ev),
   sessionsSearch: (profileId: string, query: string): Promise<{ sessionId: string; t: number; type: string; text: string }[]> => ipcRenderer.invoke(IPC.sessionsSearch, profileId, query),
   sessionsList: (): Promise<SessionMeta[]> => ipcRenderer.invoke(IPC.sessionsList),
   sessionsExport: (id: string): Promise<{ ok: boolean; path?: string }> =>

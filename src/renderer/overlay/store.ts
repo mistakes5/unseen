@@ -12,6 +12,7 @@ export interface AnswerItem {
   question?: string;
   contextHint?: string;
   refinement?: 'queued' | 'answering' | 'done' | 'error';
+  continuations?: { text: string; action: 'repeat' | 'update' }[];
   responseKind?: 'question-suggestion';
   speaker?: number;
   phase?: 'queued' | 'answering' | 'done' | 'cancelled' | 'skipped' | 'error';
@@ -55,6 +56,7 @@ interface OverlayState {
   finishAnswer(id: string | number, opts: { discard?: boolean; error?: string; usage?: Usage | null; canRetry?: boolean }): void;
   patchExpansion(id: string | number, patch: Partial<NonNullable<AnswerItem['expansion']>>): void;
   patchRefinement(id: string, phase: NonNullable<AnswerItem['refinement']>, text?: string): void;
+  noteContinuation(id: string, text: string, action: 'repeat' | 'update'): void;
   expansionUsage(usage?: Usage | null): void;
   setSettings(s: Settings): void;
   setProfiles(p: ProfileSummary[]): void;
@@ -107,6 +109,8 @@ export const useOverlayStore = create<OverlayState>((set) => ({
     ? { ...a, expansion: { text: '', phase: 'queued', visible: true, ...a.expansion, ...patch } } : a) })),
   patchRefinement: (id, refinement, text) => set(s => ({ answers: s.answers.map(a => a.id === id
     ? { ...a, refinement, ...(text !== undefined ? { text, expansion: undefined } : {}) } : a) })),
+  noteContinuation: (id, text, action) => set(s => ({ answers: s.answers.map(a => a.id === id
+    ? { ...a, continuations: [...(a.continuations ?? []), { text, action }] } : a) })),
   expansionUsage: usage => set(s => ({ usage: usage ?? s.usage, sessionCost: s.sessionCost + (usage?.estimatedCost ?? 0) })),
   appendAnswer: (id, delta) =>
     set((s) => ({

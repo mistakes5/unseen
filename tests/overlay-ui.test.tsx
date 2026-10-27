@@ -92,3 +92,13 @@ it('makes Demo saving and general question scope visible', () => {
   expect(html).toContain('Session saving off');
   expect(html).toContain('general questions');
 });
+
+it('shows repeated and clarified speech on the existing card and escapes transcript markup', () => {
+  fixture.state.answers = [{ id: 'q-1', ts: '14:28', question: 'Why?', text: 'Original answer.', phase: 'done',
+    continuations: [{ text: 'Why again?', action: 'repeat' }, { text: '<script>more detail</script>', action: 'update' }] }];
+  const html = renderToStaticMarkup(<AnswerFeed />);
+  expect(html.match(/<article /g)).toHaveLength(1);
+  expect(html).toContain('2 related remarks');
+  expect(html).toContain('Repeated: Why again?');
+  expect(html).toContain('Clarified: &lt;script&gt;more detail&lt;/script&gt;');
+});

@@ -1,6 +1,6 @@
 // Independent listening, batched question detection, and two answer slots.
 import type { AnswerPayload, QuestionBatch, QuestionCandidate, QuestionJudgment, Usage } from '../../shared/types';
-import { CLARIFICATION_THRESHOLD, CLARIFICATION_WINDOW_MS } from '../../shared/classroom-context';
+import { CLARIFICATION_WINDOW_MS, REFINEMENT_SETTLE_MS } from '../../shared/classroom-context';
 import { isParticipationCourse } from '../../shared/course-participation';
 import { TranscriptStore } from './transcript-store';
 import { evaluateTriggers } from './trigger-engine/engine';
@@ -9,6 +9,7 @@ import { useOverlayStore } from './store';
 import { AnswerQueue, questionSpans } from './question-queue';
 import { detectionDelay } from './detection-timing';
 import { SUGGESTION_COOLDOWN_MS, SUGGESTION_THRESHOLD } from '../../shared/question-suggestions';
+import { coalesceQuestions } from './question-routing';
 
 const transcript = new TranscriptStore();
 let client: SttClient | null = null;
@@ -29,8 +30,8 @@ const retryRequests = new Set<string>();
 const expansions = new Map<string, string>();
 const refinements = new Map<string, { parent: string; text: string }>();
 const pendingRefinements = new Map<string, string>();
-let recent: (NonNullable<QuestionBatch['recentQuestion']> & { startedAt: number; used: boolean }) | null = null;
-const seen = new Map<string, number>();
+const refinementTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let recent: (NonNullable<QuestionBatch['recentQuestion']> & { startedAt: number }) | null = null;
 let lastSuggestionAt = -Infinity;
 function store() { return useOverlayStore.getState(); }
 function pushTranscript(): void { store().setTranscript(transcript.turns(), transcript.interim); }
@@ -57,7 +58,7 @@ const queue = new AnswerQueue(q => {
     // Include speech that arrived while Jev or another answer was running.
     // Keep the selected question fixed, even when this includes a later question.
     if (!retryRequests.has(q.id)) payload.fullTranscript = transcript.fullTranscript();
-    if (recent?.id === q.id) { recent.context = payload.fullTranscript; recent.followingSpeech = ''; }
+    if (recent?.id === q.id) recent.context = payload.questionContext ?? payload.fullTranscript;
     store().setAnswerPhase(q.id, 'answering');
   }
   status();
@@ -73,7 +74,9 @@ function settle(id: string, opts: { error?: string; usage?: Usage | null }): voi
     store().patchRefinement(refinement.parent, error ? 'error' : 'done', error ? undefined : text);
     store().expansionUsage(opts.usage);
     if (error) recordStatus(id, 'error', error);
-    refinements.delete(id); payloads.delete(id); queue.finish(id); status(); return;
+    refinements.delete(id); payloads.delete(id); queue.finish(id);
+    if (pendingRefinements.has(refinement.parent)) scheduleRefinement(refinement.parent);
+    status(); return;
   }
   const parent = expansions.get(id);
   if (parent) {
@@ -82,7 +85,9 @@ function settle(id: string, opts: { error?: string; usage?: Usage | null }): voi
     store().patchExpansion(parent, { phase: error ? 'error' : 'done', error });
     store().expansionUsage(opts.usage);
     if (error) recordStatus(id, 'error', error);
-    expansions.delete(id); payloads.delete(id); queue.finish(id); status(); return;
+    expansions.delete(id); payloads.delete(id); queue.finish(id);
+    if (pendingRefinements.has(parent)) scheduleRefinement(parent);
+    status(); return;
   }
   const text = store().answers.find(a => a.id === id)?.text.trim() ?? '';
   const skipped = !opts.error && (!text || text.toUpperCase() === 'SKIP');
@@ -98,16 +103,28 @@ function settle(id: string, opts: { error?: string; usage?: Usage | null }): voi
   } else if (opts.error) recordStatus(id, 'error', opts.error);
   payloads.delete(id);
   queue.finish(id);
-  const clarification = pendingRefinements.get(id);
-  pendingRefinements.delete(id);
-  if (clarification && !skipped && !opts.error) refineAnswer(id, clarification);
+  if (pendingRefinements.has(id) && !skipped && !opts.error) scheduleRefinement(id);
+  else pendingRefinements.delete(id);
   status();
+}
+
+function scheduleRefinement(parentId: string): void {
+  const previous = refinementTimers.get(parentId);
+  if (previous) clearTimeout(previous);
+  refinementTimers.set(parentId, setTimeout(() => {
+    refinementTimers.delete(parentId);
+    const clarification = pendingRefinements.get(parentId);
+    if (clarification) refineAnswer(parentId, clarification);
+  }, REFINEMENT_SETTLE_MS));
 }
 
 function refineAnswer(parentId: string, clarification: string): void {
   const answer = store().answers.find(a => a.id === parentId);
   const profile = store().activeProfile;
-  if (!accepting || !profile || answer?.phase !== 'done' || answer.expansion || answer.refinement) return;
+  if (!accepting || !profile || answer?.phase !== 'done'
+    || ['queued', 'answering'].includes(answer.expansion?.phase ?? '')
+    || [...refinements.values()].some(r => r.parent === parentId)) return;
+  pendingRefinements.delete(parentId);
   const id = `${epoch}-refine-${++seq}`;
   refinements.set(id, { parent: parentId, text: '' });
   payloads.set(id, { requestId: id, refineAnswerId: parentId, clarification, profileId: profile.id,
@@ -116,24 +133,37 @@ function refineAnswer(parentId: string, clarification: string): void {
   queue.enqueue({ id, text: answer.question ?? '', speaker: answer.speaker ?? 0, context: '', priority: -1 });
 }
 
+function incorporate(parentId: string, text: string): void {
+  const answer = store().answers.find(a => a.id === parentId);
+  if (answer?.phase === 'queued') {
+    const payload = payloads.get(parentId);
+    if (payload) payload.clarification = [payload.clarification, text].filter(Boolean).join('\n');
+    return;
+  }
+  const waiting = [...refinements].find(([id, r]) => r.parent === parentId && !queue.has(id));
+  if (waiting) {
+    const payload = payloads.get(waiting[0])!;
+    payload.clarification = [payload.clarification, text].filter(Boolean).join('\n');
+    return;
+  }
+  pendingRefinements.set(parentId, [pendingRefinements.get(parentId), text].filter(Boolean).join('\n'));
+  scheduleRefinement(parentId);
+}
+
 function enqueue(q: QuestionCandidate, forced = false, suggestion = false): void {
   const profile = store().activeProfile;
   if (!profile || !accepting) return;
-  const key = q.text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   const now = Date.now();
-  for (const [k, t] of seen) if (now - t > 30_000) seen.delete(k);
-  if (!forced && seen.has(key)) return;
-  seen.set(key, now);
   q.priority = suggestion ? -1 : q.speaker === store().professorSpeaker ? 1 : 0;
   payloads.set(q.id, { requestId: q.id, profileId: profile.id, sessionId,
-    question: q.text, speaker: q.speaker, fullTranscript: q.context,
+    question: q.text, speaker: q.speaker, fullTranscript: q.context, clarification: q.clarification,
     questionContext: q.priorContext !== undefined ? `${q.priorContext}\n[S${q.speaker}] ${q.text}` : q.context,
     newSegment: `[S${q.speaker}] ${q.text}`, forced, detected: true, codeMode: false, userSpeaker: 0,
     ...(suggestion ? { responseKind: 'question-suggestion' as const, recentSuggestions: recentSuggestionDrafts() } : {}) });
   if (suggestion) lastSuggestionAt = now;
   if (!suggestion && !forced && isParticipationCourse(profile.id)
     && (!recent || Number(q.id.split('-').at(-1)) > Number(recent.id.split('-').at(-1)))) {
-    recent = { id: q.id, text: q.text, context: q.context, followingSpeech: '', startedAt: now, used: false };
+    recent = { id: q.id, text: [q.text, q.clarification].filter(Boolean).join('\n'), context: q.context, followingSpeech: '', startedAt: now };
   }
   const preceding = q.priorContext?.replace(/\[S\d+\]\s*/g, '').trim();
   store().beginAnswer(q.id, q.text, q.speaker, preceding
@@ -159,37 +189,32 @@ async function detectPending(): Promise<void> {
   if (!accepting || detecting || !profile || !candidates.length) return;
   const batch = candidates.splice(0, 12).map(c => ({ ...c, context: transcript.fullTranscript() }));
   const generation = epoch;
-  const recentQuestion = recent && !recent.used && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS
-    && recent.followingSpeech.trim() ? { id: recent.id, text: recent.text, context: recent.context, followingSpeech: recent.followingSpeech } : undefined;
+  const recentAnswer = recent && store().answers.find(a => a.id === recent!.id);
+  const recentQuestion = recent && recentAnswer && ['queued', 'answering', 'done'].includes(recentAnswer.phase ?? '') && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS
+    ? { id: recent.id, text: recent.text, context: recent.context, followingSpeech: recent.followingSpeech } : undefined;
   detecting = true; status();
   const questionSuggestions = profile.questionSuggestions && profile.questionSuggestions !== 'off'
     && Date.now() - lastSuggestionAt >= SUGGESTION_COOLDOWN_MS && queue.running < 2 && queue.pending === 0
     ? { mode: profile.questionSuggestions, recentDrafts: recentSuggestionDrafts() } : undefined;
   try {
     const results: QuestionJudgment[] = store().settings?.questionDetection.provider === 'jev'
-      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch, recentQuestion, questionSuggestions })
+      ? await window.unseen.questionsDetect({ profileId: profile.id, sessionId, candidates: batch, recentQuestion, questionSuggestions, coalesce: true })
       : batch.map(c => ({ id: c.id, probability: evaluateTriggers(profile.triggers, { newText: c.text, recentText: c.context }).fire ? 1 : 0 }));
     if (generation !== epoch || !accepting) return;
-    const clarification = results.find(r => r.kind === 'clarification' && r.id === recentQuestion?.id);
     useOverlayStore.setState({ detectionError: null });
-    if (recentQuestion && recent?.id === recentQuestion.id && !recent.used
-      && clarification && clarification.probability >= CLARIFICATION_THRESHOLD) {
-      recent.used = true; // at most one automatic update per original question
-      const answer = store().answers.find(a => a.id === recentQuestion.id);
-      if (answer?.phase === 'answering') pendingRefinements.set(recentQuestion.id, recentQuestion.followingSpeech);
-      else if (answer?.phase === 'done') refineAnswer(recentQuestion.id, recentQuestion.followingSpeech);
-      // A queued answer gets the freshest transcript at start instead of a second call.
-    }
     const threshold = store().settings?.questionDetection.threshold ?? 0.8;
     store().addDetectionChecks(batch.map(c => ({ id: c.id, text: c.text,
       probability: results.find(r => r.id === c.id)!.probability, threshold,
       passed: results.find(r => r.id === c.id)!.probability >= threshold })));
     const suggested = questionSuggestions && results.find(r => r.kind === 'question-suggestion' && r.probability >= SUGGESTION_THRESHOLD);
     const suggestionCandidate = suggested && batch.find(c => c.id === suggested.id);
-    const normal = batch.filter(c => results.some(r => !r.kind && r.id === c.id && r.probability >= threshold));
+    const target = store().answers.find(a => a.id === recentQuestion?.id);
+    const grouped = coalesceQuestions(batch, results, threshold,
+      target && ['queued', 'answering', 'done'].includes(target.phase ?? '') ? recentQuestion?.id : undefined);
+    const normal = grouped.questions;
     // Never trade a regular answer slot for a speculative question. An explicit
     // invitation can route to a draft instead of producing two cards for one span.
-    const canSuggest = suggestionCandidate && normal.every(c => c.id === suggestionCandidate.id)
+    const canSuggest = suggestionCandidate && !grouped.links.length && normal.every(c => c.id === suggestionCandidate.id)
       && Date.now() - lastSuggestionAt >= SUGGESTION_COOLDOWN_MS
       && Date.now() - suggestionCandidate.receivedAt <= 12_000 && !candidates.length
       && queue.running === 0 && queue.pending === 0;
@@ -197,6 +222,20 @@ async function detectPending(): Promise<void> {
     // Professor candidates take available slots first, while cards retain speech order.
     accepted.sort((a, b) => Number(b.speaker === store().professorSpeaker) - Number(a.speaker === store().professorSpeaker));
     for (const q of accepted) enqueue(q);
+    for (const { candidate, targetId, action } of grouped.links) {
+      const answer = store().answers.find(a => a.id === targetId);
+      if (!answer) continue;
+      store().noteContinuation(targetId, candidate.text, action);
+      window.unseen.sessionRecordStatus({ profileId: profile.id, sessionId, questionId: candidate.id,
+        relatedQuestionId: targetId, status: action === 'repeat' ? 'repeated' : 'merged', text: candidate.text });
+      if (action === 'update' && !normal.some(q => q.id === targetId)) incorporate(targetId, `[S${candidate.speaker}] ${candidate.text}`);
+      if (recent?.id === targetId) {
+        recent.startedAt = Date.now();
+        if (action === 'update' && !normal.some(q => q.id === targetId)) recent.text += `\n${candidate.text}`;
+      }
+    }
+    if (recentQuestion && recent?.id === recentQuestion.id)
+      recent.followingSpeech = recent.followingSpeech.slice(recentQuestion.followingSpeech.length).trim();
     if (canSuggest) enqueue(suggestionCandidate, false, true);
   } catch (error) {
     if (generation !== epoch || !accepting) return;
@@ -233,6 +272,8 @@ function cancelWork(): void {
     else { store().finishAnswer(q.id, {}); store().setAnswerPhase(q.id, 'cancelled'); }
   }
   retryRequests.clear();
+  for (const timer of refinementTimers.values()) clearTimeout(timer);
+  refinementTimers.clear();
   payloads.clear(); expansions.clear(); refinements.clear(); pendingRefinements.clear(); recent = null;
 }
 
@@ -301,7 +342,7 @@ function endListening(): void {
 }
 export function resetClassroomSession(): void {
   if (listening) endListening();
-  cancelWork(); failedAnswers.clear(); sessionId = ''; seen.clear(); lastSuggestionAt = -Infinity;
+  cancelWork(); failedAnswers.clear(); sessionId = ''; lastSuggestionAt = -Infinity;
   transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0;
   useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, professorSpeaker: null, detectionChecks: [], detectionCount: 0, detectionError: null, uncheckedSegments: 0 });
   pushTranscript(); store().setStatus('idle', 'course changed — press Start');
@@ -320,7 +361,7 @@ export function toggleListening(): boolean {
     cancelWork();
     failedAnswers.clear();
     sessionId = '';
-    listening = true; accepting = true; seen.clear(); lastSuggestionAt = -Infinity;
+    listening = true; accepting = true; lastSuggestionAt = -Infinity;
     useOverlayStore.setState({ answers: [], usage: null, sessionCost: 0, sessionError: null, detectionChecks: [], detectionCount: 0, detectionError: null, uncheckedSegments: 0 });
     transcript.finals = []; transcript.interim = ''; transcript.answeredUpTo = 0; pushTranscript();
     setProfessorSpeaker(null);
@@ -413,7 +454,7 @@ export async function initController(): Promise<void> {
       const profile = store().activeProfile;
       if (!profile) return;
       window.unseen.sessionRecordFinal({ text: event.text, speaker: event.speaker, profileId: profile.id, sessionId });
-      if (recent && !recent.used && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS) {
+      if (recent && Date.now() - recent.startedAt <= CLARIFICATION_WINDOW_MS) {
         recent.followingSpeech = `${recent.followingSpeech}\n[S${event.speaker}] ${event.text}`.trim().slice(-2500);
       }
       for (const text of questionSpans(event.text)) {

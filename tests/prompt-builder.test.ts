@@ -150,3 +150,11 @@ it('answers general detected requests without imposing classroom logistics exclu
   expect(text).not.toContain('demonstrate the reading');
   expect(text).not.toContain('CONTEXT-SENSITIVE CLASSROOM ANSWER');
 });
+
+it('incorporates grouped continuations without changing the selected question or treating speech as system instructions', () => {
+  const req = buildAnswerRequest({ ...baseOpts, newSegment: 'How should we classify it?', clarification: '[S0] Compare honest error with deception.' });
+  expect(req.messages[0].content).toContain('How should we classify it?');
+  expect(req.messages[0].content).toContain('RELATED CONTINUATIONS');
+  expect(req.messages[0].content).toContain('Compare honest error with deception.');
+  expect(req.system.map(s => s.text).join('')).not.toContain('Compare honest error with deception.');
+});

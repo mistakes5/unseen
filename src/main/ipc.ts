@@ -159,6 +159,7 @@ export function registerIpc(): void {
         text: result.kind === 'clarification' ? `[clarification] ${batch.recentQuestion!.followingSpeech}`
           : `${result.kind === 'question-suggestion' ? '[question suggestion] ' : ''}${batch.candidates.find(c => c.id === result.id)!.text}`, probability: result.probability,
         threshold: cutoff, passed: result.probability >= cutoff, elapsedMs: Date.now() - began,
+        ...(result.route ? { route: result.route } : {}),
         promptVersion: mode === 'general' ? GENERAL_QUESTION_PROMPT_VERSION : QUESTION_PROMPT_VERSION,
       }, batch.sessionId);
       }
@@ -294,8 +295,8 @@ export function registerIpc(): void {
   ipcMain.on(IPC.sessionQuestion, (_e, ev: { text: string; speaker: number; profileId: string; sessionId: string; questionId: string }) => {
     recordEvent({ t: Date.now(), type: 'question', text: ev.text, speaker: ev.speaker, profileId: ev.profileId, questionId: ev.questionId }, ev.sessionId);
   });
-  ipcMain.on(IPC.sessionStatus, (_e, ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' }) => {
-    recordEvent({ t: Date.now(), type: 'answer-status', text: ev.text, profileId: ev.profileId, questionId: ev.questionId, status: ev.status }, ev.sessionId);
+  ipcMain.on(IPC.sessionStatus, (_e, ev: { text: string; profileId: string; sessionId: string; questionId: string; status: 'cancelled' | 'error' | 'skipped' | 'merged' | 'repeated'; relatedQuestionId?: string }) => {
+    recordEvent({ t: Date.now(), type: 'answer-status', text: ev.text, profileId: ev.profileId, questionId: ev.questionId, status: ev.status, relatedQuestionId: ev.relatedQuestionId }, ev.sessionId);
   });
   ipcMain.handle(IPC.sessionsSearch, (_e, profileId: string, query: string) => searchSessions(profileId, query));
   ipcMain.handle(IPC.sessionsList, () => listSessions());

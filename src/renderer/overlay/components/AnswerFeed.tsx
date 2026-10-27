@@ -42,6 +42,10 @@ const AnswerCard = memo(function AnswerCard({ a, labels, professor }: {
           : a.question || 'Latest speech'}</div>
         <time>{a.ts}</time>
       </div>
+      {!!a.continuations?.length && <details className="question-continuations">
+        <summary>{a.continuations.length} related {a.continuations.length === 1 ? 'remark' : 'remarks'}</summary>
+        {a.continuations.map((c, i) => <div key={i}>{c.action === 'repeat' ? 'Repeated' : 'Clarified'}: {c.text}</div>)}
+      </details>}
       <div className="meta">
         {a.responseKind === 'question-suggestion' && <span>Question to ask · draft</span>}
         {labels && a.speaker !== undefined && <span>{a.speaker === professor ? 'Professor' : `Speaker ${a.speaker}`}</span>}
